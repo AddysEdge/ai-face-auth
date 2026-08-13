@@ -1,0 +1,55 @@
+[project]
+name = "faceauth"
+version = "0.1.0"
+description = "Local, offline Windows face-authentication MVP (Phase 1 of a research prototype for a future Windows Credential Provider)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "opencv-contrib-python==5.0.0.93",
+    "onnxruntime==1.28.0",
+    "mediapipe==1.0.0",
+    "numpy==2.5.2",
+    "cryptography==50.0.0",
+    "pydantic==2.13.4",
+    "pywin32==312; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+]
+
+[project.scripts]
+faceauth = "faceauth.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/faceauth"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "realmodel: exercises the actual downloaded ONNX weights (no camera needed)",
+    "hardware: requires a physical camera/TPM and is skipped in CI",
+]

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.pytest_tmp/
+
+# Runtime data - templates, logs, dev encryption keys. Never commit enrolled
+# biometric templates or the dev-fallback key.
+data/
+
+# Model weights are fetched via scripts/fetch_models.py, not committed -
+# see src/faceauth/model_registry.py for checksums/provenance.
+models/*.onnx
+models/*.task
+
+# OS
+Thumbs.db
+.DS_Store

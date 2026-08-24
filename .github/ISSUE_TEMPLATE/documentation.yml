@@ -1,0 +1,57 @@
+name: Documentation problem
+description: Something in the docs is wrong, unsupported, misleading, or out of date.
+labels: [documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation accuracy is a security property in this repository. A
+        claim the code cannot support is a real defect, and an overstated
+        capability is worse than a missing one. Please report both.
+
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: File and section, or a permalink.
+      placeholder: "docs/THREAT_MODEL.md section 4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - Claim is unsupported or has no citation
+        - Claim contradicts the code
+        - Claim overstates the system's security
+        - Claim is out of date
+        - Missing limitation or caveat
+        - Broken link or reference
+        - Unclear or hard to follow
+        - Typo or formatting
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong
+      description: Quote the passage and explain the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >-
+        For a Windows behaviour claim, link current official Microsoft
+        documentation. For a code contradiction, cite the file and line. For an
+        accuracy or spoof-resistance claim, bring measurements.
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording

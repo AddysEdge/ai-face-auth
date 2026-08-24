@@ -327,14 +327,66 @@ without any risk to the real logon path.
 
 ## 22. Phase 2 legitimate Windows Credential Provider design
 
-Documented in full in `docs/PHASE2_CREDENTIAL_PROVIDER.md`, not implemented. Key
-constraint carried from research: a Credential Provider **packages and submits a
+> **Updated after the Phase 2 review (2026-08-24).** The constraint below still
+> holds and was the starting point. What the review added is *which* credential
+> is actually available, and the answer is much narrower than this section
+> originally implied. See §22a.
+
+Key constraint carried from research: a Credential Provider **packages and submits a
 credential; it is not itself the trust boundary** — LSA and the relevant authentication
 package make the actual decision
 (`learn.microsoft.com/windows/win32/secauthn/credential-providers-in-windows`: *"Credential
 providers are not enforcement mechanisms; they are used to gather and serialize
-credentials, submitting them for authorization."*). This means Phase 2 cannot simply "say
-yes" — it must gate release/use of an already Windows-recognized, TPM-bound credential.
+credentials, submitting them for authorization."*). This means a provider cannot simply
+"say yes" — it must gate release/use of an already Windows-recognized credential.
+
+## 22a. Phase 2 review outcome — the credential question, resolved
+
+Full analysis with verbatim primary sources:
+`docs/PHASE2_SECURITY_REVIEW.md` and `docs/adr/`.
+
+**Result: CONDITIONAL GO overall, NO-GO for the local-account product goal.**
+
+| Windows account type | Result | Why |
+|---|---|---|
+| Local Windows account | **NO-GO** | Certificate logon is Kerberos PKINIT and terminates at a KDC holding an AD DS account object; WHfB has no local-account deployment model; NGC gating has no public API. Only the password path remains, and that is forbidden. |
+| Microsoft account (MSA) | **NO-GO** | Same exclusion; no documented third-party credential surface. |
+| Active Directory domain account | **CONDITIONAL GO** | `KERB_CERTIFICATE_LOGON` / smart-card-class logon, inside a deployment with a KDC, an enterprise PKI, certificate enrolment, account mapping, and CRL/OCSP reachable before sign-in. |
+| Microsoft Entra ID account | **DEFERRED — unproven** | No documented third-party surface producing an Entra-recognized credential was found. Not claimed either way. |
+
+Three research claims from the Phase 1 era were **withdrawn or narrowed** by
+the review, and are recorded here so this document is not left overstating
+what is possible:
+
+1. **NGC container gating is withdrawn.** `KeyCredentialManager` is documented
+   as operating "for the current user and application" — it needs a signed-in
+   user, is app-scoped, and returns nothing `LsaLogonUser` consumes. No public
+   API lets a third party gate the Windows Hello NGC container for sign-in.
+   Recorded as **unproven** and excluded.
+2. **Certificate logon does not cover the local-machine use case.** The
+   documented flow packages a `KERB_CERTIFICATE_LOGON`, and `LsaLogonUser`
+   "attempts to authenticate against the domain to which the computer is
+   joined". There is no documented local-SAM variant.
+3. **A custom LSA authentication package is not a route.** Registering one
+   means writing to `HKLM\System\CurrentControlSet\Control\Lsa\Security Packages`
+   — prohibited here — and under LSA protection, on by default for new
+   Windows 11 22H2+ enterprise installs, "Any plug-ins that are unsigned or
+   aren't signed with a Microsoft signature fail to load in LSA."
+
+**Additional sources consulted for the review**, beyond the list at the end of
+this document:
+
+- `learn.microsoft.com/windows/security/identity-protection/smart-cards/smart-card-certificate-requirements-and-enumeration`
+- `learn.microsoft.com/windows/win32/api/ntsecapi/ns-ntsecapi-kerb_certificate_logon`
+- `learn.microsoft.com/uwp/api/windows.security.credentials.keycredentialmanager`
+- `learn.microsoft.com/windows/security/identity-protection/hello-for-business/deploy/`
+- `learn.microsoft.com/windows-hardware/design/device-experiences/windows-hello-face-authentication`
+- `learn.microsoft.com/windows/win32/secauthn/registering-ssp-ap-dlls`
+- `learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection`
+- `learn.microsoft.com/windows-hardware/drivers/stream/frame-server-custom-media-source`
+- `learn.microsoft.com/windows/win32/api/winsvc/ns-winsvc-service_sid_info`
+- `learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createnamedpipea`
+- `support.microsoft.com/windows/privacy/manage-app-permissions-for-a-camera-in-windows`
 
 ## 23. Risks and limitations
 

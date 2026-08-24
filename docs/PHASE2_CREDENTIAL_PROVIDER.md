@@ -1,5 +1,25 @@
 # Phase 2 Design: Legitimate Windows Credential Provider Integration
 
+> ## SUPERSEDED IN PART - read the Phase 2 review first
+>
+> This document was written during Phase 1, before the security and
+> feasibility review existed. **The review that followed contradicts two of
+> its claims and narrows a third substantially.** It is kept because it is
+> the historical record of the design that was reviewed, and because the
+> review's findings are only meaningful next to what they replaced.
+>
+> **Read [`PHASE2_SECURITY_REVIEW.md`](PHASE2_SECURITY_REVIEW.md) and the
+> ADRs in [`adr/`](adr/) for the current position.** Where they disagree with
+> this file, they win.
+>
+> | Claim below | Current status |
+> |---|---|
+> | "NGC container gating" is a viable supported pattern | **WITHDRAWN.** No public API lets a third-party provider gate the Windows Hello NGC container. Recorded as unproven and excluded. [ADR-0001 section 6.2](adr/0001-windows-account-and-credential-strategy.md) |
+> | The credential provider "shows camera preview/status" | **WITHDRAWN.** A preview contradicts the no-raw-frames IPC rule. The tile is **status-only**. [ADR-0002 section 5.4](adr/0002-process-service-and-camera-boundaries.md) |
+> | Certificate logon works for the intended local-machine use case | **NARROWED to NO-GO for local accounts.** Certificate logon is Kerberos PKINIT and requires an AD DS domain, a KDC, and an enterprise PKI. [ADR-0001 section 5](adr/0001-windows-account-and-credential-strategy.md) |
+> | The Phase 1 Python pipeline is reused "effectively unchanged" in the service | **NARROWED.** Not recommended as the pre-logon service boundary; a native host is. [ADR-0002 section 5.2](adr/0002-process-service-and-camera-boundaries.md) |
+> | Camera availability in Session 0 before logon | **UNPROVEN - open blocker B1.** [ADR-0002 section 8](adr/0002-process-service-and-camera-boundaries.md) |
+
 **Status: design document only. Nothing in this document is implemented.**
 Phase 1 (this repository's actual code) is a standalone demo application
 that never touches Windows sign-in. This document describes how a *future*
@@ -88,8 +108,10 @@ The correct shape, consistent with how Windows Hello's own architecture
 separates biometric capture/matching from LogonUI:
 
 - The **credential provider DLL** stays thin: it renders the tile, shows
-  camera preview/status, and talks to a separate service over IPC. It
-  contains no ML inference code itself.
+  ~~camera preview/status~~ **status only - no preview, no frames, no images
+  (superseded by [ADR-0002 section 5.4](adr/0002-process-service-and-camera-boundaries.md))**,
+  and talks to a separate service over IPC. It contains no ML inference code
+  itself.
 - The **face+liveness pipeline** (this repo's Phase 1 code, effectively
   unchanged) runs inside a **Windows service** running in Session 0, under
   a dedicated least-privilege service account - not SYSTEM, not the
@@ -124,12 +146,25 @@ entirely inside Windows' own mechanisms:
    face+liveness check, is to authorize *use* of that already-provisioned
    key for the logon - Windows' own PKINIT/smart-card logon path does the
    actual authentication.
-2. **NGC container gating.** Windows Hello for Business already stores a
-   device-bound key/PIN container (NGC) that Windows itself trusts; its own
-   credential provider's entire job is to gate *use* of that container
-   behind a biometric/PIN check. A Phase 2 provider could, in principle,
+2. ~~**NGC container gating.**~~ **WITHDRAWN by the Phase 2 review - see
+   [ADR-0001 section 6.2](adr/0001-windows-account-and-credential-strategy.md).**
+   The original text below claimed a Phase 2 provider "could, in principle,
    sit in front of the same class of container using the same supported
-   provisioning APIs Windows Hello uses - not a bespoke mechanism we invent.
+   provisioning APIs Windows Hello uses". No such public API surface exists.
+   The nearest one, `Windows.Security.Credentials.KeyCredentialManager`, is
+   documented as operating "for the current user and application" - it needs a
+   signed-in user, it is app-scoped, and it returns nothing `LsaLogonUser`
+   consumes. Implementing this would require undocumented NGC internals, which
+   this project forbids. Recorded as **unproven** and excluded from the
+   decision.
+
+   > *Original text, retained for the record:* Windows Hello for Business
+   > already stores a device-bound key/PIN container (NGC) that Windows itself
+   > trusts; its own credential provider's entire job is to gate *use* of that
+   > container behind a biometric/PIN check. A Phase 2 provider could, in
+   > principle, sit in front of the same class of container using the same
+   > supported provisioning APIs Windows Hello uses - not a bespoke mechanism
+   > we invent.
 
 In both patterns, **we never see, extract, store, or transmit the user's
 Windows account password.** The face+liveness check only ever gates access
@@ -173,3 +208,35 @@ someone with prior Windows credential-provider or LSA-adjacent development
 experience) before a single line of the C++ provider or service is
 written, and should be prototyped first against a disposable VM, never a
 primary machine.
+
+## What actually happened next
+
+That review was carried out and is
+[`PHASE2_SECURITY_REVIEW.md`](PHASE2_SECURITY_REVIEW.md). Its headline result:
+
+> **CONDITIONAL GO overall.** The originally intended use case - face unlock
+> for a **local** Windows account on a personal machine - is a **NO-GO**. The
+> only surviving route to a real Credential Provider is certificate /
+> smart-card-class logon for **Active Directory domain accounts**, inside a
+> deployment that already has a domain controller and an enterprise PKI.
+
+| Account type | Result |
+|---|---|
+| Local Windows account | **NO-GO** |
+| Microsoft account (MSA) | **NO-GO** |
+| Active Directory domain account | **CONDITIONAL GO** |
+| Microsoft Entra ID account | **DEFERRED - unproven** |
+
+Two blockers remain unproven and must be settled in a VM before any provider
+code is written: whether a third-party Session 0 service can open a camera
+before interactive logon (**B1**), and whether pre-logon latency and
+reliability are acceptable (**B2**). If B1 cannot be cleared with documented
+APIs, the architecture becomes a NO-GO outright.
+
+Full detail, with primary sources:
+
+- [ADR-0001 - Windows account and credential strategy](adr/0001-windows-account-and-credential-strategy.md)
+- [ADR-0002 - Process, service, and camera boundaries](adr/0002-process-service-and-camera-boundaries.md)
+- [ADR-0003 - IPC security protocol](adr/0003-ipc-security-protocol.md)
+- [ADR-0004 - Enrollment, provisioning, and recovery](adr/0004-enrollment-provisioning-and-recovery.md)
+- [Phase 3 entry criteria](PHASE2_ACCEPTANCE_CRITERIA.md)

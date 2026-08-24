@@ -1,22 +1,166 @@
+# =========================================================================
 # Python
+# =========================================================================
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv/
+venv/
 *.egg-info/
+build/
+dist/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
 .pytest_tmp/
+.coverage
+htmlcov/
+.tox/
 
-# Runtime data - templates, logs, dev encryption keys. Never commit enrolled
-# biometric templates or the dev-fallback key.
+# =========================================================================
+# Runtime data - biometric templates, enrolled state, rate-limit state,
+# logs, dev encryption keys. NEVER commit any of it. See docs/THREAT_MODEL.md.
+# =========================================================================
 data/
+*.template
+*.dpapi
+templates/
+enrollment/
+*.embedding
+*.npy
 
-# Model weights are fetched via scripts/fetch_models.py, not committed -
-# see src/faceauth/model_registry.py for checksums/provenance.
+# Runtime authentication / verification state (Phase 2 designs a pre-logon
+# store; nothing writes one yet, but the ignore lands before the code does).
+faceauth_state/
+*.authstate
+
+# =========================================================================
+# Logs
+# =========================================================================
+logs/
+*.log
+*.log.*
+
+# =========================================================================
+# Model weights - fetched via scripts/fetch_models.py, checksum-pinned in
+# src/faceauth/model_registry.py. Never committed.
+# =========================================================================
 models/*.onnx
 models/*.task
+models/*.tflite
+models/*.pb
+models/*.pt
+models/*.pth
+models/*.bin
+models/*.safetensors
 
+# =========================================================================
+# Secrets, keys, certificates, registry exports
+# =========================================================================
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.der
+*.jks
+*.keystore
+*.reg
+secrets.json
+.env
+.env.*
+!.env.example
+
+# =========================================================================
+# Native build output (native/) - CMake, MSVC, object files, binaries,
+# debug symbols. Nothing generated is ever committed.
+# =========================================================================
+native/build*/
+native/codeql-build/
+native/out/
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+compile_commands.json
+_deps/
+
+# MSVC / MSBuild
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Bb]in/
+[Oo]bj/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.VC.db
+*.VC.opendb
+*.aps
+*.tlog
+
+# Object files, libraries, binaries, debug symbols
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.la
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.exp
+*.ilk
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.res
+*.rsp
+*.gch
+*.pch
+
+# Generated test output
+[Tt]est[Rr]esults/
+*.trx
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage.xml
+junit*.xml
+
+# =========================================================================
+# IDE / editor
+# =========================================================================
+.vs/
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# =========================================================================
 # OS
+# =========================================================================
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 .DS_Store

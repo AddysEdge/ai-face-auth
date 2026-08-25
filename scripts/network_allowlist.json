@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Declared outbound network destinations for the FaceAuth runtime.",
+    "",
+    "Every entry here is a destination this project is KNOWN to contact and has",
+    "explicitly accepted for now. An entry is not an endorsement - it is a",
+    "record that the behaviour was investigated, written up, and consciously",
+    "tolerated. See docs/PRIVACY_NETWORK_AUDIT.md and ADR-0005.",
+    "",
+    "scripts/check_network_activity.py fails if the runtime contacts anything",
+    "NOT listed here. Adding an entry is a deliberate act that requires the same",
+    "investigation the existing entry got: destination, trigger, transmitted",
+    "data, and whether it can be turned off.",
+    "",
+    "The goal is for this list to become EMPTY. Phase 3 requires it (blocker",
+    "B17): the verifier service is specified with no network access at all.",
+    "'allow_empty_for_phase3' is the assertion that must eventually hold."
+  ],
+  "allow_empty_for_phase3": true,
+  "allowed": [
+    {
+      "hostname": "play.googleapis.com",
+      "port": 443,
+      "source": "mediapipe (bundled libmediapipe.dll, Google Clearcut telemetry client)",
+      "trigger": "MediaPipe task session teardown (close()); fires even with zero detect() calls",
+      "transmits": "usage/latency metadata only - platform, host environment, mediapipe version, app_id, solution name, graph name, init latency, invocation counts. No image, frame, landmark, embedding, or template.",
+      "opt_out": "none - upstream explicitly declined to add one (google-ai-edge/mediapipe#6291, closed 2026-07-06)",
+      "documented_in": "docs/PRIVACY_NETWORK_AUDIT.md",
+      "blocks_phase_3": true
+    }
+  ]
+}

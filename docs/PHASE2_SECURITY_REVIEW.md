@@ -229,6 +229,13 @@ of relying on the use of the LocalSystem account." Demand-start, no desktop
 interaction, no network access, `SeChangeNotifyPrivilege` only, write access
 limited to its own state directory. Full table in ADR-0002 section 5.3.
 
+**"No network access" is unchanged and unweakened - and it is now a blocker.**
+The Phase 1 dependency set cannot meet it today: the bundled MediaPipe binary
+uploads usage telemetry to `play.googleapis.com` with no supported opt-out
+(`docs/PRIVACY_NETWORK_AUDIT.md`). That conflict is tracked as Phase 3 entry
+criterion **B17** and decided in ADR-0005; it must be resolved by replacing or
+rebuilding the dependency, not by relaxing this requirement.
+
 ### 3.5 Making enrollment data available pre-logon, without weakening it
 
 Phase 1's user-scope DPAPI templates are, by design, unreadable before that
@@ -432,7 +439,11 @@ the relevant ADR.
 Phase 1 was not redesigned, weakened, or rewritten. Verified after this phase's
 changes:
 
-- Works fully offline; no network calls added.
+- No network calls were **added** by Phase 2, and no biometric data is
+  transmitted. The original wording here claimed Phase 1 "works fully
+  offline"; that was inaccurate and is retracted. The bundled MediaPipe
+  binary uploads usage telemetry to `play.googleapis.com` and always did.
+  See `docs/PRIVACY_NETWORK_AUDIT.md` and ADR-0005 (Phase 3 blocker B17).
 - Unexpected errors still fail closed.
 - Raw enrollment images still not retained by default.
 - Templates still protected locally by user-scope DPAPI.

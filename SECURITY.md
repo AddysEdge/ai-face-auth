@@ -121,6 +121,36 @@ is a secret:
   `CredUIPromptForWindowsCredentials` could re-authenticate a user without
   exposing credential material; that claim was wrong and has been withdrawn.
 
+## What leaves this machine
+
+Stated plainly, because the project previously claimed it "runs entirely
+offline" and that was false.
+
+**No biometric data is transmitted, ever.** No image, video frame, face
+embedding, or enrolled template leaves the machine, in any phase. That
+commitment is absolute and appears in the never-do list below.
+
+**The process is nevertheless not network-silent.** The bundled MediaPipe
+binary opens a TLS connection to `play.googleapis.com` and uploads usage
+telemetry - MediaPipe version, platform, solution name, graph name, latency and
+invocation counts - when a MediaPipe session is torn down. This is documented,
+intended upstream behaviour with **no supported opt-out**; it is not a
+compromise and not something this project chose. It predates any dependency
+bump here and was simply not noticed.
+
+The full measurement - destination, trigger, exact transmitted schema, retry
+behaviour, and the opt-out search - is in
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). The open
+decision about whether to replace MediaPipe, rebuild it without telemetry, or
+narrow the offline claim is
+[ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
+`python scripts/check_network_activity.py` reproduces the measurement, and CI
+fails if any destination outside
+[`scripts/network_allowlist.json`](scripts/network_allowlist.json) appears.
+
+**This is not a vulnerability, and does not need reporting.** A *new* outbound
+destination, or any transmission of biometric data, absolutely does.
+
 ## What this project will never do
 
 These are permanent commitments, not current limitations, and they hold in
@@ -140,7 +170,11 @@ every phase:
 - Never use undocumented NGC or Windows Hello internals.
 - Never report a successful Windows authentication on the basis of a face match
   alone.
-- Never send biometric data off the machine.
+- Never send biometric data off the machine. This is unconditional, and is
+  unaffected by the third-party telemetry described above - that telemetry
+  carries no biometric content, and no schema in it is capable of carrying any.
+- Never add an outbound network destination without investigating it and
+  recording it in `scripts/network_allowlist.json` with its justification.
 - Never weaken domain-controller certificate-binding enforcement (for example
   via `StrongCertificateBindingEnforcement`) to make a weak certificate mapping
   work.

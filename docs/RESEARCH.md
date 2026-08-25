@@ -40,8 +40,15 @@ carry an undisclosed licensing liability.
 
 **Rejected for Phase 1 default:** training a model from scratch (see §Comparison below —
 no labeled dataset, no justification for the effort at this stage); a cloud/API-key
-recognizer (violates the "must work fully offline" requirement and adds a third-party
-trust dependency incompatible with a local authentication control).
+recognizer (transmits face images to a third party, which is incompatible with a local
+authentication control, and adds a third-party trust dependency).
+
+> **Correction (2026-08-25).** This requirement was originally written as "must work
+> fully offline". That framing was both inaccurate and imprecise: the project is not
+> network-silent (`docs/PRIVACY_NETWORK_AUDIT.md`), and the property that actually
+> matters here is that **biometric data never leaves the machine** - which a cloud
+> recognizer violates and which still holds today. The rejection stands; the reason is
+> now stated on the grounds that apply.
 
 ## 2. Recommended face detector
 
@@ -321,8 +328,9 @@ ai-face-auth/
 
 ## 21. Phase 1 standalone MVP design
 
-A local, offline, standalone Python application (webcam demo lock screen), described in
-full in `docs/ARCHITECTURE.md`. No Windows login integration. Safe to run and iterate on
+A local, standalone Python application (webcam demo lock screen), described in full in
+`docs/ARCHITECTURE.md`. All biometric processing is on-device, though the process is not
+network-silent (`docs/PRIVACY_NETWORK_AUDIT.md`). No Windows login integration. Safe to run and iterate on
 without any risk to the real logon path.
 
 ## 22. Phase 2 legitimate Windows Credential Provider design
@@ -455,7 +463,7 @@ interface is not RGB-specific), but is out of scope for the initial MVP pass.
 
 | Option | Verdict |
 |---|---|
-| A. Cloud/API-key recognition | Rejected — violates the offline requirement outright, and introduces a third-party trust dependency for a local security control. |
+| A. Cloud/API-key recognition | Rejected — it would transmit face images off the machine, which is the one property this project does hold (see `docs/PRIVACY_NETWORK_AUDIT.md`), and introduces a third-party trust dependency for a local security control. |
 | B. Local pretrained inference | **Selected for Phase 1** — mature, license-clean options exist (SFace/YuNet) with known accuracy figures, no training data or infrastructure needed. |
 | C. Train from scratch | Rejected for now — no labeled face dataset in scope, months of effort, and would land at or below existing pretrained accuracy without a very large data/compute investment; not justified for an MVP. |
 | D. Pretrained now, fine-tune later | **This is the actual selected strategy** — Option B today, with the interface design (§24) keeping fine-tuning/replacement/quantization as a drop-in later step rather than a rewrite. |

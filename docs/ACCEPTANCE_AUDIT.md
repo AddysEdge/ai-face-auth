@@ -335,7 +335,8 @@ scaffold, CI, and community files. It changed **no Phase 1 source code**.
 
 | Requirement | Still true? | Evidence |
 |---|---|---|
-| Works fully offline | Yes | No network call added anywhere; `native/` has no networking and its transports are in-process or a local pipe |
+| Biometric data stays on the machine | Yes | No frame, template, or embedding is transmitted anywhere; `native/` has no networking and its transports are in-process or a local pipe |
+| ~~Works fully offline~~ | **No - claim retracted** | The bundled MediaPipe binary uploads usage telemetry to `play.googleapis.com` on session teardown. Pre-existing, not added by Phase 2, and not disableable upstream. See `docs/PRIVACY_NETWORK_AUDIT.md` and ADR-0005 |
 | Unexpected errors fail closed | Yes | `authentication.py`'s single try/except is untouched; the native layer adopts the same rule structurally (ADR-0003 section 5.7) |
 | Raw enrollment images not retained by default | Yes | `EnrollmentConfig.retain_raw_frames` unchanged |
 | Templates protected locally | Yes | `DpapiTemplateStore` unchanged |

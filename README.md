@@ -3,8 +3,12 @@
 [![CI](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml)
 
-A local, offline, webcam-based face-authentication **demo/research
-prototype**. It is a longer-term exploration into whether a legitimate,
+A local, webcam-based face-authentication **demo/research prototype**. All
+face detection, embedding, and matching run locally on CPU; no image, frame,
+template, or embedding ever leaves the machine. It is **not** network-silent:
+the bundled MediaPipe binary uploads usage telemetry to `play.googleapis.com`,
+which upstream provides no supported way to disable - see
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). It is a longer-term exploration into whether a legitimate,
 Microsoft-supported Windows Credential Provider could one day offer face
 authentication as an alternative sign-in method. **It does not touch Windows
 sign-in in any way, and after the Phase 2 review it is clear that for a local
@@ -93,9 +97,18 @@ compatibility rollback key has been unsupported since 9 September 2025.
 - Authenticates a user the same way: capture → detect → quality-gate →
   liveness challenge → embed → compare against the stored template →
   threshold decision → grant/deny.
-- Runs entirely offline, on CPU, using open, license-clean pretrained
-  models (see "Models" below). No cloud API, no API key, no network access
-  required at runtime.
+- Runs on CPU using open, license-clean pretrained models (see "Models"
+  below). No cloud API and no API key: **all biometric processing is local,
+  and no image, frame, template, or embedding is ever transmitted.**
+- Is **not** network-silent, and this is stated rather than glossed over. The
+  bundled MediaPipe binary opens a TLS connection to `play.googleapis.com` and
+  uploads usage telemetry (MediaPipe version, solution name, latency and
+  invocation counts - no biometric content) when a MediaPipe session is torn
+  down. It is documented upstream behaviour with **no supported opt-out**.
+  Full investigation in [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md);
+  the open decision about what to do next is
+  [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
+  `python scripts/check_network_activity.py` reproduces the measurement.
 - Rate-limits repeated failures with escalating cooldown, persisted to disk
   so it survives across separate CLI invocations, not just within one
   running process (see `docs/THREAT_MODEL.md` §12 for why this matters -
@@ -367,6 +380,8 @@ and folder structure.
 | [`docs/adr/0002-...`](docs/adr/0002-process-service-and-camera-boundaries.md) | Process/service topology, Session 0 camera blockers, why the preview was removed |
 | [`docs/adr/0003-...`](docs/adr/0003-ipc-security-protocol.md) | The versioned IPC protocol and its threat model |
 | [`docs/adr/0004-...`](docs/adr/0004-enrollment-provisioning-and-recovery.md) | Enrollment, provisioning, revocation, recovery, uninstall |
+| [`docs/adr/0005-...`](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) | MediaPipe telemetry vs. the offline claim - **open decision**, Phase 3 blocker B17 |
+| [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) | What leaves the machine, where it goes, and why "offline" was retracted |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented Phase 1 architecture |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 13 threats, mitigations, and residual risks |
 | [`docs/RESEARCH.md`](docs/RESEARCH.md) | Why every model and design choice was made |

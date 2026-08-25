@@ -177,11 +177,17 @@ permanently reserved. A v1 server calls its verification backend synchronously,
 so it cannot read a cancellation while verifying - the message could only ever
 have been handled between requests, which is not cancellation of anything.
 
-What exists instead is `ClientSession::abandon()`: the client stops waiting
-locally and sends nothing; the server's own monotonic deadline releases its
-side. `protocol.abandoning_a_client_leaves_the_server_untouched` asserts the
-uncomfortable half of that honestly - a verification already in flight still
-runs to completion.
+What exists instead is `ClientSession::abandon()`. **Client abandonment is
+local and sends nothing. The server remains unaware. A synchronous in-flight
+backend continues holding its worker and concurrency gate until it returns. The
+post-verification deadline check prevents a late decision from producing
+`Allow`, but it does not bound or interrupt the backend call. B16 requires the
+Phase 3 design to make the call itself genuinely bounded and cancellable.**
+
+Two tests assert the uncomfortable halves of that rather than leaving them to
+prose: `protocol.abandoning_a_client_leaves_the_server_untouched` (a
+verification already in flight still runs to completion) and
+`protocol.a_synchronous_backend_holds_its_worker_until_it_returns`.
 
 Real in-flight cancellation needs an asynchronous server, a cancellable
 backend, and a protocol version bump. See ADR-0003 section 5.8 and entry

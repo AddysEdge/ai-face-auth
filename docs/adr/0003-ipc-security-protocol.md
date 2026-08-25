@@ -67,7 +67,7 @@ Any mismatch on any of these is a hard `DENY`, not a retry.
 | R5 | Explicit state machine. Any message arriving in a state that does not accept it is a protocol error and terminates the exchange. |
 | R6 | Mutually authenticated at the OS level (section 5.2), not by a shared secret in the protocol. |
 | R7 | Privacy-safe diagnostics. The same denylist discipline as Phase 1's `SecurityLogger`. |
-| R8 | Deadline-bounded on both sides, so the logon screen never hangs. **In-flight cancellation is explicitly OUT of scope for version 1** - see section 6. |
+| R8 | The **client** is deadline-bounded and its transport reads are bounded, so the provider tile fails over to another credential rather than hanging - regardless of what the server is doing. The **server's backend call is NOT bounded** in version 1: a hung synchronous backend holds its worker and the concurrency gate until it returns (section 5.9). **In-flight cancellation is explicitly OUT of scope for version 1** - see section 5.8. Bounding the server side is criterion B16. |
 
 ## 3. Evidence from official sources
 
@@ -142,7 +142,7 @@ All integers little-endian. Fixed 16-byte header:
 
 Message types: `1 VerifyRequest`, `2 VerifyResult`, `4 ProtocolError`.
 **Type `3` is RESERVED and permanently unassigned in version 1** - it held a
-`CancelRequest` in an earlier draft; see section 6 for why that was removed
+`CancelRequest` in an earlier draft; see section 5.8 for why that was removed
 rather than kept. A message of type 3 is rejected as `UnknownMessageType`.
 
 **No absolute timestamp appears anywhere in this format.** Durations are
@@ -300,7 +300,7 @@ retried.**
 | T13 | Resource-exhaustion DoS | Bounded instances, bounded in-flight requests, bounded seen-set, bounded read sizes, per-connection deadlines | An attacker that can occupy the allowed connections degrades the tile; the tile then fails over to another provider (ADR-0002 R6). |
 | T14 | Slow-loris / hang | Every read/write has a deadline; the state machine has an absolute request deadline | none material |
 | T15 | Service restart mid-request | Client sees disconnect, moves to `Failed`, DENY. In-flight server state is not persisted - a restart voids everything | Correct by construction: a restarted service must never honour a pre-restart request. |
-| T16 | Client disconnect mid-request | Server abandons the exchange, releases the camera, and drops state on the next transport error or at its own deadline | A synchronous v1 server only notices at the next I/O boundary; a verification already running still finishes. See section 6. |
+| T16 | Client disconnect mid-request | Server abandons the exchange and drops state at its next I/O boundary; the post-verification deadline check stops a late decision producing an Allow | A synchronous v1 server does not notice until the backend returns. A verification already running still finishes, still holding its worker and the concurrency gate - the deadline check bounds the decision, not the call. See sections 5.8 and 5.9, and criterion B16. |
 | T17 | Concurrent requests | `ConcurrencyGate` (thread-safe) admits one in-flight verification; a `ServerSession` constructed with a gate holds it across `verify()`, so a second concurrent session is rejected with `Busy` rather than queued. Proven by `server_sessions_sharing_a_gate_cannot_verify_concurrently`, which uses a backend that genuinely blocks inside `verify()`. | The gate is a counting primitive, not a production accept loop: it models admission control only, and says nothing about queueing or fairness. A legitimate second user is refused, not queued. |
 | T18 | Log-based leakage | Privacy-safe diagnostics (section 5.5) | Correlation from timing/counts remains possible; treated as acceptable. |
 
@@ -365,12 +365,20 @@ review exists to remove.
 What version 1 provides instead:
 
 - **`ClientSession::abandon()`** - the client stops waiting and moves to a
-  terminal `Abandoned` state. It sends nothing. The server is not told, and its
-  own monotonic deadline releases its side. `abandoning_a_client_leaves_the_
-  server_untouched` in the native suite asserts exactly this, including the
-  uncomfortable part: a verification already in flight still runs to completion.
-- **Bounded deadlines on both sides**, which is what actually stops the logon
-  screen hanging (R8).
+  terminal `Abandoned` state. **Client abandonment is local and sends nothing.
+  The server remains unaware. A synchronous in-flight backend continues holding
+  its worker and concurrency gate until it returns. The post-verification
+  deadline check prevents a late decision from producing `Allow`, but it does
+  not bound or interrupt the backend call. B16 requires the Phase 3 design to
+  make the call itself genuinely bounded and cancellable.**
+  `abandoning_a_client_leaves_the_server_untouched` and
+  `a_synchronous_backend_holds_its_worker_until_it_returns` assert those two
+  uncomfortable halves in the native suite.
+- **A bounded CLIENT deadline plus bounded transport reads**, which is what
+  actually stops the provider tile hanging: the client stops waiting on its own
+  schedule and fails over to another credential tile regardless of what the
+  server is doing. This is a property of the client alone - it does **not**
+  mean the server side is bounded (R8, section 5.9).
 
 **Phase 3 requirement.** Real in-flight cancellation needs all of:
 

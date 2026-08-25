@@ -196,8 +196,12 @@ ErrorCode ClientSession::abandon() {
     if (state_ != ClientState::AwaitingResult && state_ != ClientState::ResultAvailable) {
         return fail(ErrorCode::InvalidStateTransition);
     }
-    // Local only. Version 1 has no cancellation message, so the server is not
-    // notified; its own monotonic deadline releases its side.
+    // Local only, and it sends nothing - version 1 has no cancellation
+    // message, so the server remains unaware. A synchronous in-flight backend
+    // continues holding its worker and the concurrency gate until it returns.
+    // The post-verification deadline check prevents a late decision from
+    // producing Allow, but it does not bound or interrupt the backend call
+    // (B16).
     state_ = ClientState::Abandoned;
     last_error_ = ErrorCode::Abandoned;
     return ErrorCode::Abandoned;

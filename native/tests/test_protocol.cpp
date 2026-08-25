@@ -669,8 +669,11 @@ FACEAUTH_TEST(server_timeout_while_idle_is_an_invalid_transition) {
 }
 
 FACEAUTH_TEST(client_can_abandon_locally_without_sending_anything) {
-    // This is NOT cancellation. Protocol version 1 has no cancellation
-    // message, so the server is never told; its own deadline releases it.
+    // This is NOT cancellation. Abandonment is local and sends nothing, so the
+    // server remains unaware; a synchronous in-flight backend keeps its worker
+    // and the concurrency gate until it returns. See
+    // `abandoning_a_client_leaves_the_server_untouched` and
+    // `a_synchronous_backend_holds_its_worker_until_it_returns`.
     const VerifyRequest request = make_request(19);
     ClientSession client = make_client(request);
 

@@ -55,8 +55,16 @@ public:
     //
     // NOTE: in protocol version 1 this call is SYNCHRONOUS, which is exactly
     // why in-flight cancellation does not exist (see MessageType in
-    // protocol.hpp and ADR-0003 section 6). A Phase 3 backend would need an
-    // asynchronous/event-loop shape before cancellation is meaningful.
+    // protocol.hpp and ADR-0003 sections 5.8/5.9).
+    //
+    // While this call runs, the calling worker thread and the concurrency gate
+    // are held, and nothing can preempt it - not a client abandonment, which
+    // sends nothing and leaves the server unaware, and not the server's own
+    // deadline, which is only re-checked AFTER this returns. That check stops a
+    // late decision producing an Allow; it does not bound or interrupt this
+    // call. B16 requires the Phase 3 design to make the call itself genuinely
+    // bounded and cancellable, which also needs an asynchronous/event-loop
+    // service shape before cancellation is meaningful.
     virtual VerificationDecision verify(const VerifyRequest& request,
                                         std::uint64_t now_steady_ms) = 0;
 };

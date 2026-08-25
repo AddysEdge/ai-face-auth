@@ -326,9 +326,18 @@ fail-closed behaviour.
   ever have been handled *between* requests, which is not cancellation. The
   message type was removed, type 3 is permanently reserved in v1, and real
   cancellation is a Phase 3 requirement needing an asynchronous server and a
-  protocol version bump (ADR-0003 section 5.8, criterion B16). What version 1
-  does provide is local client abandonment plus bounded deadlines on both
-  sides, which is what actually stops the logon screen hanging.
+  protocol version bump (ADR-0003 section 5.8, criterion B16).
+
+  What version 1 provides instead is local client abandonment. **Client
+  abandonment is local and sends nothing. The server remains unaware. A
+  synchronous in-flight backend continues holding its worker and concurrency
+  gate until it returns. The post-verification deadline check prevents a late
+  decision from producing an `Allow`, but it does not bound or interrupt the
+  backend call. B16 requires the Phase 3 design to make the call itself
+  genuinely bounded and cancellable.** What actually stops the provider tile
+  hanging is the *client's* own bounded deadline and bounded transport reads -
+  a property of the client alone, not evidence that the server side is
+  bounded.
 - **No wall clock participates in any security decision.** An earlier draft
   serialized Unix timestamps for deadlines and result expiry. System time can
   jump backwards or forwards, which would silently extend a "short-lived"

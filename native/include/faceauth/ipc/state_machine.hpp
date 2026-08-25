@@ -55,10 +55,14 @@ enum class ClientState {
     AwaitingResult,
     ResultAvailable,
     Consumed,
-    // The client stopped waiting. Purely local: protocol version 1 has no
-    // cancellation message, so nothing is sent and the server is not told.
-    // The server's own deadline cleans its side up. See MessageType in
-    // protocol.hpp for why real cancellation is deferred to Phase 3.
+    // The client stopped waiting. Abandonment is LOCAL and sends nothing, so
+    // the server remains unaware. A synchronous in-flight backend continues
+    // holding its worker and the concurrency gate until it returns. The
+    // post-verification deadline check prevents a late decision from producing
+    // Allow, but it does not bound or interrupt the backend call. B16 requires
+    // the Phase 3 design to make the call itself genuinely bounded and
+    // cancellable. See MessageType in protocol.hpp and ADR-0003 sections 5.8
+    // and 5.9.
     Abandoned,
     Failed,
 };

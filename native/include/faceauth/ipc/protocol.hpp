@@ -66,7 +66,7 @@ enum class MessageType : std::uint16_t {
     // claiming a control that did not exist.
     //
     // Real in-flight cancellation is a Phase 3 requirement and needs a
-    // protocol version bump plus a concurrent server. See ADR-0003 section 6.
+    // protocol version bump plus a concurrent server. See ADR-0003 section 5.8.
     // A message of type 3 is rejected as UnknownMessageType.
     ProtocolError = 4,
 };

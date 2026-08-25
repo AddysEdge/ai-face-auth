@@ -26,6 +26,36 @@ std::uint32_t clamp_lifetime(std::uint32_t requested) {
 
 std::uint64_t min_u64(std::uint64_t a, std::uint64_t b) { return (a < b) ? a : b; }
 
+// Holds the concurrency gate for a scope and always releases it - including
+// when the backend throws. A manual acquire/release pair leaked the gate on
+// any non-local exit, which would have wedged admission control permanently
+// after a single misbehaving backend.
+class GateGuard {
+public:
+    explicit GateGuard(ConcurrencyGate* gate) : gate_(gate) {
+        if (gate_ != nullptr) {
+            status_ = gate_->acquire();
+            held_ = (status_ == ErrorCode::None);
+        }
+    }
+
+    ~GateGuard() {
+        if (held_) {
+            gate_->release();
+        }
+    }
+
+    GateGuard(const GateGuard&) = delete;
+    GateGuard& operator=(const GateGuard&) = delete;
+
+    ErrorCode status() const { return status_; }
+
+private:
+    ConcurrencyGate* gate_;
+    ErrorCode status_ = ErrorCode::None;
+    bool held_ = false;
+};
+
 }  // namespace
 
 const char* to_string(ClientState state) {
@@ -119,7 +149,8 @@ ErrorCode ClientSession::on_message(const std::vector<std::uint8_t>& message,
                 return fail(ErrorCode::IdentityMismatch);
             }
             // The client's own deadline, on the client's own clock.
-            if (now_steady_ms > request_deadline_steady_ms_) {
+            // Half-open: arriving AT the deadline is already too late.
+            if (now_steady_ms >= request_deadline_steady_ms_) {
                 return fail(ErrorCode::RequestExpired);
             }
 
@@ -183,8 +214,10 @@ ErrorCode ClientSession::consume(std::uint64_t now_steady_ms, Outcome& out_outco
     if (state_ != ClientState::ResultAvailable) {
         return fail(ErrorCode::InvalidStateTransition);
     }
-    if (now_steady_ms > result_deadline_steady_ms_ ||
-        now_steady_ms > request_deadline_steady_ms_) {
+    // Half-open on both windows: consuming AT either deadline is too late, and
+    // a zero-length result window is therefore never usable.
+    if (now_steady_ms >= result_deadline_steady_ms_ ||
+        now_steady_ms >= request_deadline_steady_ms_) {
         return fail(ErrorCode::RequestExpired);
     }
 
@@ -199,8 +232,8 @@ ErrorCode ClientSession::consume(std::uint64_t now_steady_ms, Outcome& out_outco
 // ---------------------------------------------------------------------------
 
 ServerSession::ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache,
-                             ConcurrencyGate* gate)
-    : backend_(backend), replay_cache_(replay_cache), gate_(gate) {}
+                             MonotonicClock& clock, ConcurrencyGate* gate)
+    : backend_(backend), replay_cache_(replay_cache), clock_(clock), gate_(gate) {}
 
 ErrorCode ServerSession::fail(ErrorCode error, const RequestId& request_id,
                               std::vector<std::uint8_t>& out_message) {
@@ -211,9 +244,11 @@ ErrorCode ServerSession::fail(ErrorCode error, const RequestId& request_id,
 }
 
 ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
-                                    std::uint64_t now_steady_ms,
                                     std::vector<std::uint8_t>& out_message) {
     out_message.clear();
+
+    // Arrival time, from this server's own clock.
+    const std::uint64_t arrival_steady_ms = clock_.steady_now_ms();
 
     const DecodeResult decoded = decode_message(message);
     if (!decoded.ok()) {
@@ -240,31 +275,48 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
             // The server's OWN deadline, from the server's OWN clock, created
             // on arrival. The client's clock is never consulted.
             const std::uint64_t effective_lifetime = clamp_lifetime(request.requested_lifetime_ms);
-            request_deadline_steady_ms_ = now_steady_ms + effective_lifetime;
+            request_deadline_steady_ms_ = arrival_steady_ms + effective_lifetime;
 
             const ErrorCode replay =
                 replay_cache_.observe(request.request_id, request.nonce,
-                                      request_deadline_steady_ms_, now_steady_ms);
+                                      request_deadline_steady_ms_, arrival_steady_ms);
             if (replay != ErrorCode::None) {
                 return fail(replay, request.request_id, out_message);
             }
 
-            // Admission control, when a gate was supplied. A second concurrent
-            // verification is refused outright rather than queued.
-            if (gate_ != nullptr) {
-                const ErrorCode admission = gate_->acquire();
-                if (admission != ErrorCode::None) {
-                    return fail(admission, request.request_id, out_message);
+            VerificationDecision decision{};
+            {
+                // Admission control, when a gate was supplied. A second
+                // concurrent verification is refused outright rather than
+                // queued. The guard releases on every exit from this scope,
+                // including the exception path below.
+                GateGuard gate_guard(gate_);
+                if (gate_guard.status() != ErrorCode::None) {
+                    return fail(gate_guard.status(), request.request_id, out_message);
+                }
+
+                active_request_ = request;
+                state_ = ServerState::Processing;
+
+                try {
+                    decision = backend_.verify(request, arrival_steady_ms);
+                } catch (...) {
+                    // A backend that throws tells us nothing about the user.
+                    // Fail closed: no Allow, terminal state, valid error reply,
+                    // and the gate is released by the guard as it unwinds.
+                    return fail(ErrorCode::InternalError, request.request_id, out_message);
                 }
             }
 
-            active_request_ = request;
-            state_ = ServerState::Processing;
-
-            const VerificationDecision decision = backend_.verify(request, now_steady_ms);
-
-            if (gate_ != nullptr) {
-                gate_->release();
+            // SECOND deadline check, on a FRESH reading. The first check
+            // happened before the verification ran; a backend that overran its
+            // window would otherwise still produce an Allow, which is exactly
+            // the stale-decision problem deadlines exist to prevent.
+            //
+            // Half-open: completing AT the deadline is already too late.
+            const std::uint64_t completion_steady_ms = clock_.steady_now_ms();
+            if (completion_steady_ms >= request_deadline_steady_ms_) {
+                return fail(ErrorCode::RequestExpired, request.request_id, out_message);
             }
 
             VerifyResult result{};
@@ -273,10 +325,12 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
             result.account_binding = request.account_binding;
             result.outcome = decision.outcome;
             result.reason_code = decision.reason_code;
-            // Short-lived, and never longer than what remains of the server's
-            // own window for this request. Sent as a relative TTL only.
-            result.result_ttl_ms = static_cast<std::uint32_t>(
-                min_u64(kMaxResultValidityMs, effective_lifetime));
+            // TTL is what is ACTUALLY left of the server's window, measured
+            // from completion - not from the original lifetime, which would
+            // have handed the client a window the server no longer had.
+            const std::uint64_t remaining_ms = request_deadline_steady_ms_ - completion_steady_ms;
+            result.result_ttl_ms =
+                static_cast<std::uint32_t>(min_u64(kMaxResultValidityMs, remaining_ms));
 
             out_message = encode(result);
             if (out_message.empty()) {
@@ -294,9 +348,7 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
     return fail(ErrorCode::UnknownMessageType, zero_request_id(), out_message);
 }
 
-ErrorCode ServerSession::on_timeout(std::uint64_t now_steady_ms,
-                                    std::vector<std::uint8_t>& out_message) {
-    (void)now_steady_ms;
+ErrorCode ServerSession::on_timeout(std::vector<std::uint8_t>& out_message) {
     out_message.clear();
     if (state_ != ServerState::Processing) {
         return fail(ErrorCode::InvalidStateTransition, zero_request_id(), out_message);

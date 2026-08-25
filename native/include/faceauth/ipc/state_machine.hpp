@@ -24,6 +24,16 @@
 //
 // A wall-clock jump therefore cannot lengthen or shorten either side's
 // enforced validity, because no wall clock is consulted at any point.
+//
+// EXPIRY IS HALF-OPEN, EVERYWHERE.
+//
+//     valid    when now <  deadline
+//     expired  when now >= deadline
+//
+// So a deadline instant is already too late, and a zero-length window is
+// never usable. Requests, results, and replay-cache entries all follow this
+// rule; a mixture would leave a one-millisecond seam where two components
+// disagreed about whether something was still alive.
 
 #ifndef FACEAUTH_IPC_STATE_MACHINE_HPP
 #define FACEAUTH_IPC_STATE_MACHINE_HPP
@@ -34,6 +44,7 @@
 #include <vector>
 
 #include "faceauth/ipc/boundaries.hpp"
+#include "faceauth/ipc/clock.hpp"
 #include "faceauth/ipc/protocol.hpp"
 #include "faceauth/ipc/replay_cache.hpp"
 
@@ -120,11 +131,13 @@ class ConcurrencyGate;
 
 class ServerSession {
 public:
-    // `gate` is optional. When supplied, the session must acquire it before
-    // running a verification and releases it afterwards; when null, no
-    // admission control is applied. See ConcurrencyGate for what that models.
+    // The session reads time from `clock` itself rather than being told what
+    // time it is. That is deliberate: the deadline has to be re-checked AFTER
+    // the backend returns, and a caller-supplied "now" captured before the
+    // verification started cannot express that. `gate` is optional; when
+    // supplied the session holds it across the verification.
     ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache,
-                  ConcurrencyGate* gate = nullptr);
+                  MonotonicClock& clock, ConcurrencyGate* gate = nullptr);
 
     ServerState state() const { return state_; }
     ErrorCode last_error() const { return last_error_; }
@@ -133,14 +146,26 @@ public:
     // reply into `out_message`. Every rejection produces a ProtocolError reply
     // and moves to a terminal state; nothing is silently ignored.
     //
-    // `now_steady_ms` is the server's own monotonic reading; the server derives
-    // its own deadline from it rather than trusting anything from the client.
-    ErrorCode on_message(const std::vector<std::uint8_t>& message, std::uint64_t now_steady_ms,
+    // The deadline is enforced TWICE: once on arrival, and again after the
+    // backend returns. A verification that overran its window can therefore
+    // never produce an Allow - see ADR-0003 section 5.9.
+    ErrorCode on_message(const std::vector<std::uint8_t>& message,
                          std::vector<std::uint8_t>& out_message);
 
-    ErrorCode on_timeout(std::uint64_t now_steady_ms, std::vector<std::uint8_t>& out_message);
+    // Transport-level: no message arrived while the session was waiting.
+    //
+    // THIS CANNOT INTERRUPT A RUNNING VERIFICATION. In protocol version 1 the
+    // backend is called synchronously, so while it runs, this session is not
+    // reading anything and nobody is in a position to call this. It exists for
+    // the "waited for a request and none came" case only. A backend that hangs
+    // holds its worker thread and the concurrency gate until it returns; the
+    // post-verification deadline check bounds the *decision*, not the *call*.
+    // Making the call itself interruptible is Phase 3 work (criterion B16).
+    ErrorCode on_timeout(std::vector<std::uint8_t>& out_message);
+
     ErrorCode on_peer_disconnect();
 
+    // This session's own monotonic deadline, set on arrival. Never serialized.
     std::uint64_t request_deadline_steady_ms() const { return request_deadline_steady_ms_; }
 
 private:
@@ -149,6 +174,7 @@ private:
 
     IVerificationBackend& backend_;
     ReplayCache& replay_cache_;
+    MonotonicClock& clock_;
     ConcurrencyGate* gate_;
     VerifyRequest active_request_{};
     ServerState state_ = ServerState::Idle;

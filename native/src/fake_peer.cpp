@@ -117,20 +117,20 @@ ErrorCode run_fake_server(Transport& transport, IVerificationBackend& backend,
                           ReplayCache& replay_cache, MonotonicClock& mono_clock,
                           DiagnosticSink& diagnostics, std::uint32_t receive_timeout_ms,
                           ConcurrencyGate* gate) {
-    ServerSession session(backend, replay_cache, gate);
+    ServerSession session(backend, replay_cache, mono_clock, gate);
 
     std::vector<std::uint8_t> inbound;
     const TransportStatus status = transport.receive(inbound, receive_timeout_ms);
     if (status == TransportStatus::Timeout) {
         std::vector<std::uint8_t> reply;
-        return session.on_timeout(mono_clock.steady_now_ms(), reply);
+        return session.on_timeout(reply);
     }
     if (status != TransportStatus::Ok) {
         return session.on_peer_disconnect();
     }
 
     std::vector<std::uint8_t> reply;
-    const ErrorCode error = session.on_message(inbound, mono_clock.steady_now_ms(), reply);
+    const ErrorCode error = session.on_message(inbound, reply);
     if (!reply.empty()) {
         transport.send_with_timeout(reply, receive_timeout_ms);
     }

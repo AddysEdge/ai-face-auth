@@ -1,5 +1,7 @@
 #include "faceauth/ipc/boundaries.hpp"
 
+#include <stdexcept>
+
 namespace faceauth::ipc {
 
 VerificationDecision ScriptedVerificationBackend::verify(const VerifyRequest& request,
@@ -46,6 +48,25 @@ void BlockingVerificationBackend::release_all() {
 std::size_t BlockingVerificationBackend::entered() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return entered_;
+}
+
+VerificationDecision SlowVerificationBackend::verify(const VerifyRequest& request,
+                                                     std::uint64_t now_steady_ms) {
+    (void)request;
+    (void)now_steady_ms;
+    ++calls_;
+    // Time passes inside the verification, exactly as it would with a real
+    // camera and pipeline - but deterministically.
+    clock_.advance(elapsed_ms_);
+    return decision_;
+}
+
+VerificationDecision ThrowingVerificationBackend::verify(const VerifyRequest& request,
+                                                         std::uint64_t now_steady_ms) {
+    (void)request;
+    (void)now_steady_ms;
+    ++calls_;
+    throw std::runtime_error("simulated verification backend failure");
 }
 
 }  // namespace faceauth::ipc

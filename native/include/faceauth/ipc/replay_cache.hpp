@@ -11,6 +11,12 @@
 // influence how long its entry is remembered beyond the bounded lifetime the
 // server already clamped.
 //
+// EXPIRY IS HALF-OPEN, matching requests and results exactly: an entry is live
+// while `now < expires_at`, and gone once `now >= expires_at`. That is the same
+// rule the sessions use, so a request whose deadline has just passed and the
+// cache entry that protected it stop being live at the same instant - no seam
+// where one component still considers something alive and the other does not.
+//
 // The cache is bounded (kReplayCacheCapacity). When it is full, expired
 // entries are evicted first; if that is not enough, the *new* observation is
 // rejected rather than an old entry being dropped. Dropping an old entry to

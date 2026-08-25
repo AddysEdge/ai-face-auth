@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "faceauth/ipc/clock.hpp"
 #include "faceauth/ipc/protocol.hpp"
 
 namespace faceauth::ipc {
@@ -116,6 +117,43 @@ private:
     VerificationDecision decision_;
     std::size_t entered_ = 0;
     bool released_ = false;
+};
+
+// Test double that consumes a controllable amount of the request window by
+// advancing an injected ManualMonotonicClock while "verifying". This is how a
+// slow or overrunning backend is simulated deterministically - a real sleep
+// would make the assertion depend on scheduler luck.
+class SlowVerificationBackend : public IVerificationBackend {
+public:
+    SlowVerificationBackend(ManualMonotonicClock& clock, std::uint64_t elapsed_ms,
+                            VerificationDecision decision)
+        : clock_(clock), elapsed_ms_(elapsed_ms), decision_(decision) {}
+
+    VerificationDecision verify(const VerifyRequest& request,
+                                std::uint64_t now_steady_ms) override;
+
+    std::size_t calls() const { return calls_; }
+
+private:
+    ManualMonotonicClock& clock_;
+    std::uint64_t elapsed_ms_;
+    VerificationDecision decision_;
+    std::size_t calls_ = 0;
+};
+
+// Test double that throws. A verification backend is the least trustworthy
+// component in the design - it is where camera and ML code would eventually
+// live - so the session boundary must survive it throwing without leaking the
+// concurrency gate or emitting an Allow.
+class ThrowingVerificationBackend : public IVerificationBackend {
+public:
+    VerificationDecision verify(const VerifyRequest& request,
+                                std::uint64_t now_steady_ms) override;
+
+    std::size_t calls() const { return calls_; }
+
+private:
+    std::size_t calls_ = 0;
 };
 
 }  // namespace faceauth::ipc

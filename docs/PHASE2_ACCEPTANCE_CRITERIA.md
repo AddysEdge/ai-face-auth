@@ -25,7 +25,7 @@ exact, checkable conditions that must all be true before any Phase 3
 | A10 | Ruff passes | **Met** | `ruff check --no-cache src tests scripts` |
 | A11 | mypy passes | **Met** | `mypy --no-incremental src` - 47 source files |
 | A12 | Native Debug and Release build and test pass where the toolchain is available | **Met in CI** | No MSVC/CMake on the development machine; GitHub Actions `windows-latest` performs both configurations. See Part D. |
-| A13 | GitHub Actions pass, or limitations documented honestly | **Met** | `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`; toolchain gap documented in Part D. `dependency-review` is transparently non-enforcing until the owner enables Dependency graph; `pip-audit` is enforcing. |
+| A13 | GitHub Actions pass, or limitations documented honestly | **Met** | `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`; toolchain gap documented in Part D. `dependency-review` currently neither runs (Dependency graph is off) nor blocks (`continue-on-error`); enabling the repository setting would fix only the first, and both are stated plainly in the workflow and its README. `pip-audit` runs and is enforcing. |
 | A14 | No Windows authentication or registry state changed | **Met** | No registry write exists anywhere in the repository; no installer; no `sc`/`regsvr32`/`reg` invocation |
 | A15 | No Credential Provider registered | **Met** | No COM interface implemented, no CLSID, no `DllRegisterServer` |
 | A16 | No Windows service installed | **Met** | No SCM code, no service binary, no installer |

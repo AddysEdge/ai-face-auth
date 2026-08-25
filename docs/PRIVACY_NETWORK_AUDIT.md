@@ -378,8 +378,9 @@ Not decided in this change. See
 [ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md), which lays
 out the viable options - replace MediaPipe, build MediaPipe from source without
 telemetry, or narrow the product's offline requirement to Phase 1 only - with
-the cost and the consequence of each. It is recorded as **Proposed / open**,
-and Phase 3 cannot start while it is unresolved.
+the cost and the consequence of each. It is recorded as **Proposed / open**
+and tracked in [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6);
+Phase 3 cannot start while it is unresolved.
 
 ---
 

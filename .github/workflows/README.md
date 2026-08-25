@@ -10,8 +10,28 @@ demand.
 | `python` | `windows-latest` | Installs the project with its declared dev extras on Python 3.12, then runs `pytest`, `ruff check --no-cache src tests scripts`, and `mypy --no-incremental src`. Uploads the JUnit XML. |
 | `native` | `windows-latest` | Matrix over `Debug` and `Release`. Configures with `-A x64`, builds, and runs the full CTest suite. This is the **authoritative** native result: the development machine has no MSVC or CMake (`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part D). |
 | `repo-hygiene` | `ubuntu-latest` | Fails if a binary, secret, key, certificate, registry export, model weight, log, or biometric artefact is tracked in git, and fails if a Credential Provider registration, service creation, or credential-serialization marker appears in code. |
-| `dependency-review` | `ubuntu-latest` | Pull requests only. Flags dependency changes with known high-severity advisories. |
+| `dependency-review` | `ubuntu-latest` | Pull requests only. Flags dependency changes with known high-severity advisories. **Currently inert - see below.** |
 | `pip-audit` | `ubuntu-latest` | Audits the platform-independent dependency set. **Advisory** (`continue-on-error`) - a new CVE in a pinned CV/ML dependency should be visible immediately without blocking an unrelated docs change. Read the job output on every PR. |
+
+### `dependency-review` needs a repository setting that is currently OFF
+
+`actions/dependency-review-action` requires the repository's **Dependency
+graph** feature. It is not enabled here, so the action reports *"Dependency
+review is not supported on this repository"* and the step is marked
+`continue-on-error` so it does not block an otherwise-green PR.
+
+**Do not read a green tick on this job as "dependencies were reviewed."** The
+job prints a warning annotation saying so whenever the review did not actually
+run. `pip-audit` is the dependency scanning that genuinely runs today.
+
+To activate it, a repository admin enables **Dependency graph** under
+Settings -> Code security. That is a repository settings change and is
+deliberately left to the owner rather than made automatically. The job is wired
+up and left in place so that flipping the setting is the only action needed.
+
+Enabling Dependency graph is also the prerequisite for Dependabot *security*
+updates (currently disabled); Dependabot *version* updates, configured in
+`dependabot.yml`, work regardless.
 
 ### Why `repo-hygiene` exists
 

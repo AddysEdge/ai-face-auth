@@ -124,6 +124,16 @@ jobs:
           fi
           echo "No registration or credential-serialization markers in code."
 
+  # PREREQUISITE, NOT YET MET: this action requires the repository's
+  # Dependency graph feature to be enabled (Settings -> Code security ->
+  # Dependency graph). It is currently OFF for this repository, so the step is
+  # non-blocking and reports "not supported on this repository" instead of
+  # reviewing anything.
+  #
+  # It is left wired up, rather than deleted, so that turning the setting on is
+  # the only action needed to make it live. Until then, `pip-audit` below is
+  # the dependency scanning that actually runs. Do not read a green tick on
+  # this job as "dependencies were reviewed" until the setting is enabled.
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
@@ -134,10 +144,24 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v7
+
       - name: Review dependency changes
+        id: review
+        continue-on-error: true
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
+
+      - name: Report whether the review actually ran
+        shell: bash
+        run: |
+          if [ "${{ steps.review.outcome }}" = "success" ]; then
+            echo "Dependency review ran and found nothing at or above 'high'."
+          else
+            echo "::warning::Dependency review did NOT run. Enable Dependency graph at" \
+                 "https://github.com/${{ github.repository }}/settings/security_analysis" \
+                 "to activate it. pip-audit is covering dependency scanning meanwhile."
+          fi
 
   pip-audit:
     name: Python dependency audit

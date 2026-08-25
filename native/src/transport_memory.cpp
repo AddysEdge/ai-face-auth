@@ -67,6 +67,15 @@ public:
         : inbound_(std::move(inbound)), outbound_(std::move(outbound)) {}
 
     TransportStatus send(const std::vector<std::uint8_t>& message) override {
+        return send_with_timeout(message, 0u);
+    }
+
+    // The in-memory queue is unbounded, so a send never needs to wait and the
+    // timeout is unused. It is accepted so this transport satisfies the same
+    // contract as the named-pipe one, where the bound is load-bearing.
+    TransportStatus send_with_timeout(const std::vector<std::uint8_t>& message,
+                                      std::uint32_t timeout_ms) override {
+        (void)timeout_ms;
         if (message.size() > kMaxMessageBytes) {
             // Oversized messages are refused at the transport too, so a bug
             // upstream cannot put one on the wire.

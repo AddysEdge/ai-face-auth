@@ -99,38 +99,51 @@ enable_testing()
 add_executable(faceauth_ipc_tests
     tests/test_main.cpp
     tests/test_protocol.cpp
+    tests/test_named_pipe.cpp
 )
 target_include_directories(faceauth_ipc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(faceauth_ipc_tests PRIVATE faceauth_ipc)
 faceauth_set_strict_warnings(faceauth_ipc_tests)
 
 # Each protocol test is registered with CTest individually so a failure names
-# exactly one behaviour. Keep this list in sync with tests/test_protocol.cpp;
-# `faceauth_ipc_tests --list` prints the names the binary actually has, and
-# the guard test below fails if the two drift apart.
+# exactly one behaviour. Keep these lists in sync with tests/*.cpp;
+# `faceauth_ipc_tests --list` prints the names the binary actually has, and the
+# protocol.all_registered_tests entry below fails if the two drift apart.
 set(FACEAUTH_TEST_NAMES
     round_trip_all_message_types
     malformed_message_is_rejected
+    reserved_message_type_3_is_rejected
     truncated_message_is_rejected
     unknown_protocol_version_is_rejected
     oversized_message_is_rejected_before_allocation
     opaque_fields_are_length_capped
     empty_account_binding_is_rejected
+    wire_format_carries_no_absolute_timestamp
+    zero_or_excessive_requested_lifetime_is_rejected_on_the_wire
+    excessive_result_ttl_is_rejected_on_the_wire
+    client_deadline_is_derived_from_its_own_monotonic_clock
+    server_deadline_is_derived_from_its_own_monotonic_clock
+    result_ttl_cannot_extend_the_client_deadline
+    short_result_ttl_shortens_client_validity
+    expiry_advances_only_with_the_injected_monotonic_clock
     valid_request_response_flow
     denied_verification_is_reported_as_deny
     exhausted_backend_script_denies
     duplicate_request_id_is_rejected
     replayed_nonce_is_rejected
-    replay_cache_evicts_expired_entries
+    replay_cache_evicts_on_the_servers_monotonic_clock
     full_replay_cache_fails_closed
+    replay_cache_is_safe_under_concurrent_observers
     expired_request_is_rejected_by_server
-    excessive_request_lifetime_is_rejected
-    result_never_outlives_its_request
+    server_clamps_the_requested_lifetime_to_the_protocol_maximum
+    result_ttl_never_exceeds_the_protocol_maximum
+    result_ttl_never_outlives_a_short_request_window
     expired_result_cannot_be_consumed
     result_arriving_after_the_deadline_is_rejected
     client_timeout_denies
-    server_timeout_denies
-    cancellation_moves_both_sides_out_of_flight
+    server_timeout_while_idle_is_an_invalid_transition
+    client_can_abandon_locally_without_sending_anything
+    abandoning_a_client_leaves_the_server_untouched
     client_invalid_state_transition
     client_rejects_a_request_message_from_the_server
     server_invalid_state_transition
@@ -143,8 +156,9 @@ set(FACEAUTH_TEST_NAMES
     server_handles_client_disconnect
     mid_request_disconnect_denies
     service_restart_voids_an_in_flight_request
-    concurrent_requests_are_admission_controlled
-    concurrent_sessions_do_not_share_replay_state
+    concurrency_gate_admits_only_the_configured_number_simultaneously
+    server_sessions_sharing_a_gate_cannot_verify_concurrently
+    distinct_requests_do_not_collide_in_a_shared_replay_cache
     end_to_end_exchange_over_in_memory_transport
     secure_random_produces_distinct_identifiers
     diagnostics_reject_forbidden_field_names
@@ -154,19 +168,45 @@ set(FACEAUTH_TEST_NAMES
     protocol_test_results_are_labelled_as_such
 )
 
+# Windows-only. These drive real named pipes against deliberately unresponsive
+# peers, so each one carries an explicit CTest TIMEOUT: a regression that
+# reintroduced blocking I/O must fail the run, never hang it.
+set(FACEAUTH_NAMED_PIPE_TEST_NAMES
+    named_pipe_server_connect_times_out_with_no_client
+    named_pipe_client_read_times_out_with_a_silent_server
+    named_pipe_server_read_times_out_with_a_silent_client
+    named_pipe_transport_is_reusable_after_a_timeout
+    named_pipe_peer_disconnect_is_reported_not_hung
+    named_pipe_send_to_a_closed_peer_returns_promptly
+    named_pipe_close_does_not_wait_for_an_unresponsive_peer
+    named_pipe_full_exchange_succeeds_after_the_bounded_io_rewrite
+)
+
 foreach(test_name IN LISTS FACEAUTH_TEST_NAMES)
     add_test(NAME protocol.${test_name}
              COMMAND faceauth_ipc_tests ${test_name})
+    set_tests_properties(protocol.${test_name} PROPERTIES TIMEOUT 60)
 endforeach()
+
+if(WIN32)
+    foreach(test_name IN LISTS FACEAUTH_NAMED_PIPE_TEST_NAMES)
+        add_test(NAME named_pipe.${test_name}
+                 COMMAND faceauth_ipc_tests ${test_name})
+        set_tests_properties(named_pipe.${test_name} PROPERTIES TIMEOUT 60)
+    endforeach()
+endif()
 
 # Running with no arguments executes every registered test and returns a
 # non-zero exit code if any fails. This catches a test that exists in the
 # source but was never added to FACEAUTH_TEST_NAMES above.
 add_test(NAME protocol.all_registered_tests COMMAND faceauth_ipc_tests)
+set_tests_properties(protocol.all_registered_tests PROPERTIES TIMEOUT 300)
 
 # End-to-end exercises of the fake peers, as separate processes.
 add_test(NAME fake_peer.memory_allow COMMAND faceauth_ipc_fake --memory)
 add_test(NAME fake_peer.memory_deny COMMAND faceauth_ipc_fake --memory-deny)
+set_tests_properties(fake_peer.memory_allow fake_peer.memory_deny PROPERTIES TIMEOUT 60)
 if(WIN32)
     add_test(NAME fake_peer.named_pipe_loopback COMMAND faceauth_ipc_fake --pipe)
+    set_tests_properties(fake_peer.named_pipe_loopback PROPERTIES TIMEOUT 60)
 endif()

@@ -56,9 +56,10 @@ body:
       label: If this is Phase 3 (gated)
       description: >-
         Leave unticked if it is not Phase 3. Phase 3 work cannot start until
-        every entry criterion in docs/PHASE2_ACCEPTANCE_CRITERIA.md Part B
-        (B1-B15) passes AND the owner records explicit approval. A proposal is
-        welcome before then - implementation is not.
+        every Part B entry criterion in
+        docs/PHASE2_ACCEPTANCE_CRITERIA.md - including B4a and B16, since the
+        list is not a contiguous range - passes AND the owner records explicit
+        approval. A proposal is welcome before then; implementation is not.
       options:
         - label: I understand this cannot be implemented until all Phase 3 entry criteria pass and the owner records explicit approval.
           required: false

@@ -152,8 +152,9 @@ deliver, which would be its own kind of dishonesty.
 ### Currently gated - Phase 2 gate, not a permanent ban
 
 These are **blocked today** and will stay blocked until the Phase 3 entry
-criteria in `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B **all** pass and the
-repository owner records explicit written approval:
+criteria in `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - **every criterion,
+including B4a and B16** - pass and the repository owner records explicit
+written approval:
 
 - Implementing `ICredentialProvider` / `ICredentialProviderCredential2`.
 - COM registration: a CLSID, a credential-provider registry entry, a
@@ -174,13 +175,19 @@ backstop, not the boundary.
 
 Phase 3 is not forbidden forever - it is **not authorized yet**. To propose it:
 
-1. Confirm every entry criterion in `docs/PHASE2_ACCEPTANCE_CRITERIA.md`
-   Part B (B1-B15) has evidence, and link that evidence.
+1. Confirm **every Part B entry criterion, including B4a and B16**, in
+   `docs/PHASE2_ACCEPTANCE_CRITERIA.md` has evidence, and link that evidence.
+   The list is not a contiguous range - do not write "B1-B15" and assume it
+   covers everything.
 2. Link the owner's recorded product-scope decision accepting the
-   AD-domain-only scope (B7).
-3. Link the VM snapshot/rollback plan (B5) and the rehearsed recovery runbook
-   (B6).
-4. Link the independent Windows-authentication security review (B11).
+   AD-domain-only scope (**B7**).
+3. Link the disposable-VM snapshot/rollback policy (**B5**) and the rehearsed
+   recovery runbook (**B6**).
+4. Link the independent Windows-authentication implementation-plan security
+   review (**B11**).
+5. Link the strong-certificate-binding verification against a Full Enforcement
+   domain controller (**B4a**), and the cancellable-backend design if
+   in-flight cancellation is in scope (**B16**).
 5. Use the **Phase 3 (gated)** option in the pull-request template and complete
    its extra checklist instead of the Phase 2 boundary checklist.
 

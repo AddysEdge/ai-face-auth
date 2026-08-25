@@ -21,7 +21,7 @@ exact, checkable conditions that must all be true before any Phase 3
 | A6 | IPC protocol and threat model documented | **Met** | [ADR-0003](adr/0003-ipc-security-protocol.md) sections 5.1-5.7, threat table 5.4 |
 | A7 | Enrollment, provisioning, revocation, recovery, uninstall documented | **Met** | [ADR-0004](adr/0004-enrollment-provisioning-and-recovery.md) |
 | A8 | All 137 pre-existing Python tests still pass | **Met** | see the PR description for the run |
-| A9 | Any newly added tests pass | **Met** | native CTest suite: 56 named protocol tests + 8 named-pipe tests + 1 aggregate + 3 fake-peer entries = **68 CTest entries on Windows**, Debug and Release |
+| A9 | Any newly added tests pass | **Met** | native CTest suite: 70 named protocol tests + 8 named-pipe tests + 1 aggregate + 3 fake-peer entries = **82 CTest entries on Windows**, Debug and Release |
 | A10 | Ruff passes | **Met** | `ruff check --no-cache src tests scripts` |
 | A11 | mypy passes | **Met** | `mypy --no-incremental src` - 47 source files |
 | A12 | Native Debug and Release build and test pass where the toolchain is available | **Met in CI** | No MSVC/CMake on the development machine; GitHub Actions `windows-latest` performs both configurations. See Part D. |
@@ -37,7 +37,13 @@ exact, checkable conditions that must all be true before any Phase 3
 
 ## Part B - Phase 3 entry criteria
 
-**All of B1-B16 must be true. Any single failure blocks Phase 3.**
+**Every criterion in this Part must be true. Any single failure blocks Phase 3.**
+
+The identifiers are **not a contiguous numeric range**: the list is B1, B2, B3,
+B4, **B4a**, B5-B14, B15, and **B16**. Writing "B1-B15" silently omits B4a and
+B16, so refer to it as *"every Part B entry criterion, including B4a and B16"*.
+Identifiers are stable - existing ones are never renumbered when a criterion is
+added.
 
 ### Feasibility gates (must be settled experimentally, in a VM)
 
@@ -79,7 +85,7 @@ exact, checkable conditions that must all be true before any Phase 3
 
 | # | Criterion | How it is proved |
 |---|---|---|
-| **B16** | If in-flight cancellation is required, it is designed as an asynchronous/event-loop server with a cancellable backend, introduced under a **new protocol version**. Version 1 has no cancellation and message type 3 stays reserved (ADR-0003 section 5.8). | A design document plus a protocol version bump. Do not reuse type 3 in v1. |
+| **B16** | **The verification backend call is genuinely bounded and cancellable, and the service is asynchronous or otherwise interruptible.** Version 1 calls the backend synchronously: the post-verification deadline check refuses a late `Allow`, but nothing can bound or preempt the *call*, so a hung backend holds its worker thread and the concurrency gate until it returns (ADR-0003 sections 5.9 and 5.10). Phase 3 must fix the call, not just the decision. If in-flight cancellation is in scope it is introduced under a **new protocol version**; message type 3 stays reserved in v1 (ADR-0003 section 5.8). | A design document showing: (a) a hard upper bound on the backend call itself, including camera acquisition and inference; (b) cancellation points through the pipeline; (c) an event-loop or equivalent service that can read its transport while a verification runs; (d) a test proving a deliberately hung backend does not hold the worker or the gate past its bound. Plus a protocol version bump if a cancel message is added. |
 
 ### Standing prohibitions that carry into Phase 3 unchanged
 

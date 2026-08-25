@@ -447,8 +447,16 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 | **B2** | Unproven: acceptable pre-logon latency and reliability for a cold Session 0 verification (camera warm-up + detect + liveness + embed). Budget must be set before measuring. | ADR-0002 |
 | **B3** | Unresolved: whether a TPM-backed CNG KSP key without a virtual smart card can be consumed by the `KERB_CERTIFICATE_LOGON` path, or whether a VSC is mandatory - and whether VSCs remain supported. | ADR-0001 Q1/Q2 |
 | **B4** | Missing: an AD domain + enterprise PKI lab (KDC certificate, NTAuth CA, enrolment, CRL/OCSP). Without it, nothing in ADR-0001 section 5.2 is testable. | ADR-0001 |
-| **B5** | Not yet done: a dedicated security review of the *implementation* by someone with prior credential-provider or LSA-adjacent experience, before any provider code is written. | all |
+| **B5** | Not yet done: every install/uninstall test runs on a disposable VM with a written snapshot/rollback policy. No physical or primary machine, ever. | ADR-0004 |
+| **B11** | Not yet done: an independent security review of the *implementation plan* by someone with prior Windows credential-provider or LSA-adjacent experience, before any provider code is written. | all |
 | **B15** | **Unresolved: no password-free, OS-mediated enrollment-authorization mechanism has been proven.** The previously claimed one does not qualify. Without it, pre-logon enrollment cannot be authorized safely and Phase 3 cannot proceed. | ADR-0004 5.1a |
+| **B4a** | Not yet done: strong certificate binding verified against a **Full Enforcement** domain controller, including observing a weak-mapped certificate fail with Event ID 39. | ADR-0001 E8 |
+| **B16** | Deferred by design: in-flight cancellation requires a genuinely bounded/cancellable backend and an asynchronous or otherwise interruptible service. Version 1 has neither. | ADR-0003 5.8/5.9 |
+
+**This table lists the architecture-critical blockers, not the whole gate.** The
+canonical list is `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B, and **every**
+criterion in it must pass - B1, B2, B3, B4, B4a, B5-B14, B15, and B16. The
+identifiers are not a contiguous range.
 
 ### Accepted risks
 
@@ -489,8 +497,12 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 **Phase 3 may not begin yet.**
 
 The review reached CONDITIONAL GO, which is enough to justify the documentation
-and the inert native scaffold delivered here - but B1 through B5 and B15 are
-open, and B1 or B15 could each still turn the whole architecture into a NO-GO. Writing
+and the inert native scaffold delivered here - but **every Part B entry
+criterion remains open**, and B1 or B15 could each still turn the whole
+architecture into a NO-GO. The blockers listed below are the
+architecture-critical ones; they are not the whole gate. The canonical list is
+`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B, and it includes B4a and B16 - it
+is not a contiguous numeric range. Writing
 credential-provider code before B1 is settled would be building on an
 unverified assumption.
 

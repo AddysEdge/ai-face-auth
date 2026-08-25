@@ -106,11 +106,18 @@ these links will be closed.
 
 - [ ] Owner's recorded product-scope decision accepting the AD-domain-only
       scope (B7): <!-- link -->
-- [ ] Evidence for every entry criterion B1-B15 in
-      `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B: <!-- link -->
-- [ ] VM snapshot/rollback plan (B5) and rehearsed recovery runbook (B6):
+- [ ] Evidence for **every Part B entry criterion, including B4a and B16**, in
+      `docs/PHASE2_ACCEPTANCE_CRITERIA.md` (the list is not a contiguous
+      range): <!-- link -->
+- [ ] Disposable-VM snapshot/rollback policy (**B5**) and rehearsed recovery
+      runbook (**B6**): <!-- link -->
+- [ ] Independent Windows-authentication implementation-plan security review
+      (**B11**): <!-- link -->
+- [ ] Strong certificate binding verified against a Full Enforcement domain
+      controller (**B4a**): <!-- link -->
+- [ ] If in-flight cancellation is in scope: cancellable/bounded backend and an
+      interruptible service design, under a new protocol version (**B16**):
       <!-- link -->
-- [ ] Independent Windows-authentication security review (B11): <!-- link -->
 - [ ] This PR does **not** also relax the `repo-hygiene` CI guard. Relaxing it
       is a separate, standalone Phase 3-enablement PR.
 

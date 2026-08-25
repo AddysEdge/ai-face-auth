@@ -208,6 +208,20 @@ The rules, all implemented and tested in `native/`:
 8. `steady_clock` epoch values are **never** serialized: their origin is
    implementation-defined and meaningless to another process, so comparing two
    processes' values would silently reintroduce the same class of bug.
+9. **Every window is half-open:**
+
+   ```
+   valid    when now <  deadline
+   expired  when now >= deadline
+   ```
+
+   A deadline instant is already too late, and a zero-length window is
+   therefore never usable - a result with `result_ttl_ms == 0` can never be
+   consumed. Requests, results, and replay-cache entries all follow the same
+   rule. A mixture would leave a one-millisecond seam where two components
+   disagreed about whether something was still alive, and the dangerous
+   direction of that disagreement is the one where replay protection lapses
+   before the request it protects.
 
 Consequence: a wall-clock change cannot extend or shorten request or result
 validity, because no wall clock is consulted at any point.
@@ -372,6 +386,66 @@ What version 1 provides instead:
 None of that exists in Phase 2, and none of it should be added before ADR-0002's
 blockers clear.
 
+### 5.9 The server deadline is enforced AFTER the backend returns
+
+An earlier revision recorded the server's deadline on arrival and then never
+looked at the clock again. That is not a deadline; it is a note. A backend that
+overran its window still produced an `Allow`, and the result's TTL was computed
+from the *original* lifetime rather than from what was actually left - handing
+the client a window the server no longer had.
+
+Version 1 now checks **twice**, against two separate readings of the server's
+own monotonic clock:
+
+1. **On arrival** - the request's lifetime is validated and clamped, and the
+   server's own deadline is set from its own clock.
+2. **On completion** - a *fresh* reading is taken after `verify()` returns. If
+   `completion >= deadline`, the exchange fails closed with `RequestExpired`
+   and **no `VerifyResult` is emitted at all** - the client receives a
+   `ProtocolError`, so a stale decision can never be mistaken for a live one.
+
+The result TTL is then
+`min(kMaxResultValidityMs, deadline - completion)` - what is genuinely left,
+never the original lifetime.
+
+`ErrorCode::RequestExpired` is used for both checks deliberately.
+`ErrorCode::Timeout` is reserved for transport-level waits (a read that
+produced nothing), so the two remain distinguishable in diagnostics.
+
+**The honest limitation.** This bounds the *decision*, not the *call*. In
+version 1 `IVerificationBackend::verify()` is invoked **synchronously**, so
+while it runs:
+
+- the calling thread is held until it returns;
+- the concurrency gate stays held (it is released by an RAII guard on every
+  exit, including an exception, but not before the call finishes);
+- `ServerSession::on_timeout()` cannot preempt it - nothing is reading the
+  transport, and no other code in the session is running.
+
+A backend that hangs forever therefore still hangs its worker. The
+post-verification check guarantees such a backend can never produce an `Allow`;
+it does not guarantee the worker comes back. Making the call itself bounded and
+interruptible requires an asynchronous or otherwise preemptible service design
+and a cancellable backend, which is **entry criterion B16** and Phase 3 work.
+
+### 5.10 Backend exceptions are contained at the session boundary
+
+`IVerificationBackend` is the least trustworthy interface in the design - it is
+where camera and ML code would eventually live. If it throws:
+
+- the exception is caught at the `ServerSession` boundary and never escapes;
+- the session fails closed with `ErrorCode::InternalError`;
+- a valid `ProtocolError` reply is produced, and **no `Allow` is emitted**;
+- the session is left in the terminal `Failed` state;
+- the concurrency gate is released by its RAII guard as the stack unwinds, so
+  `in_flight()` returns to zero and admission control is not wedged for the
+  rest of the machine's uptime.
+
+A manual acquire/release pair leaked the gate on any non-local exit, which
+would have meant a single misbehaving backend permanently blocking every
+subsequent verification. That is why the guard is RAII rather than a pair of
+calls.
+
 ## 6. What is implemented in Phase 2, and what is not
 
 **Implemented** (`native/`, inert, normal desktop, no privileges):
@@ -383,7 +457,12 @@ blockers clear.
 - Cryptographically random `request_id`/`nonce` generation
   (`BCryptGenRandom` on Windows).
 - Replay detection (duplicate request IDs, reused nonces).
-- Deadline and timeout handling against an injectable **monotonic** clock.
+- Deadline handling against an injectable **monotonic** clock, checked on
+  arrival **and again after the backend returns**, with half-open windows
+  (section 5.9).
+- Result TTL computed from the time genuinely remaining at completion.
+- Backend exceptions contained, failing closed with the concurrency gate
+  released by an RAII guard (section 5.10).
 - Local client abandonment (no message sent).
 - Thread-safe replay cache and a thread-safe concurrency gate that a
   `ServerSession` really does hold across its verification.
@@ -411,6 +490,9 @@ blockers clear.
   service SDDL, service SID, System-integrity label, and
   `ImpersonateNamedPipeClient` token check are a specification for Phase 3.
 - **No in-flight cancellation** (section 5.8).
+- **No bound on the backend CALL itself** - only on the decision it produces
+  (section 5.9). A synchronous backend that hangs holds its worker and the
+  concurrency gate until it returns.
 - No production accept loop, connection queue, or fairness policy.
 
 ## 7. Security implications
@@ -443,7 +525,7 @@ blockers clear.
 | Q2 | Is `session_id` + `desktop_binding` sufficient to bind a request to the real logon desktop, and what are they at the moment LogonUI is running? | 3 |
 | Q3 | Should the client require a code-signature check of the server binary in addition to the ACL, given section 5.2's SYSTEM limitation? | 3 |
 | Q4 | What is the right result-validity window once real end-to-end latency is measured (ADR-0002 B2)? 5 s is a placeholder. | 3 |
-| Q5 | What does the asynchronous server shape look like that makes in-flight cancellation possible (section 5.8), and what protocol version introduces it? | 3 |
+| Q5 | What does the asynchronous/interruptible server shape look like that makes in-flight cancellation possible (sections 5.8 and 5.9), what bounds the backend call itself, and what protocol version introduces it? See entry criterion B16. | 3 |
 
 ## 10. Status
 

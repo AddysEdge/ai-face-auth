@@ -16,7 +16,7 @@ Windows account it never can - see below.**
 |---|---|
 | **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 137 tests. |
 | **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
-| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** Three blockers are unproven (B1, B2, B15). See [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). |
+| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, and B15 are the most architecture-critical, but they are not the whole gate. |
 
 **No Credential Provider is registered. No Windows service is installed. No
 Windows password is handled anywhere in this repository.** Nothing here reads
@@ -51,7 +51,16 @@ documentation in
 So for a personal machine, this repository's application-level control **is**
 the answer, not a stepping stone to one.
 
-Three blockers remain open before any Phase 3 work could begin:
+### What has to be true before Phase 3
+
+**Every entry criterion in
+[`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md)
+Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, and **B16** - **and**
+the repository owner must record explicit written approval. The identifiers are
+not a contiguous range, so "B1-B15" would silently omit two of them.
+
+Three of those are the most architecture-critical, in the sense that failing any
+one of them would invalidate the design rather than merely delay it:
 
 - **B1** - whether a third-party Session 0 service can open a camera before
   interactive logon. If this cannot be cleared using documented APIs, the
@@ -64,10 +73,17 @@ Three blockers remain open before any Phase 3 work could begin:
   withdrawn and no replacement is proposed. Without one, enrollment cannot be
   authorized safely at all.
 
-Also required: certificates with a **strong** account binding. Per Microsoft's
-KB5014754, UPN and other name-based mappings are weak and are denied by domain
-controllers in Full Enforcement (since 11 February 2025), and the compatibility
-rollback key has been unsupported since 9 September 2025.
+**The rest are not optional.** They include the AD + PKI lab (**B4**),
+verification against a Full Enforcement domain controller (**B4a**), the
+disposable-VM policy (**B5**), the rehearsed recovery runbook (**B6**), the
+owner's product-scope decision (**B7**), the native re-implementation plan
+(**B10**), an independent Windows-authentication security review (**B11**), and
+a cancellable-backend design if in-flight cancellation is in scope (**B16**).
+
+On certificates specifically: a **strong** account binding is required. Per
+Microsoft's KB5014754, UPN and other name-based mappings are weak and are denied
+by domain controllers in Full Enforcement (since 11 February 2025), and the
+compatibility rollback key has been unsupported since 9 September 2025.
 
 ## What this project does
 
@@ -196,8 +212,8 @@ cmake --build native/build --config Release
 ctest --test-dir native/build -C Release --output-on-failure
 ```
 
-Warnings are errors (`/W4 /permissive- /WX`). The suite is **68 CTest entries
-on Windows**: 56 named protocol tests, 8 named-pipe tests (each with an explicit
+Warnings are errors (`/W4 /permissive- /WX`). The suite is **82 CTest entries
+on Windows**: 70 named protocol tests, 8 named-pipe tests (each with an explicit
 CTest timeout, so a blocking-I/O regression fails rather than hangs), 1
 aggregate entry, and 3 fake-peer entries. See
 [`native/README.md`](native/README.md) for what the scaffold is, what it

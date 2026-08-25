@@ -10,24 +10,37 @@ demand.
 | `python` | `windows-latest` | Installs the project with its declared dev extras on Python 3.12, then runs `pytest`, `ruff check --no-cache src tests scripts`, and `mypy --no-incremental src`. Uploads the JUnit XML. |
 | `native` | `windows-latest` | Matrix over `Debug` and `Release`. Configures with `-A x64`, builds, and runs the full CTest suite. This is the **authoritative** native result: the development machine has no MSVC or CMake (`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part D). |
 | `repo-hygiene` | `ubuntu-latest` | Fails if a binary, secret, key, certificate, registry export, model weight, log, or biometric artefact is tracked in git, and fails if a Credential Provider registration, service creation, or credential-serialization marker appears in code. |
-| `dependency-review` | `ubuntu-latest` | Pull requests only. Flags dependency changes with known high-severity advisories. **Currently inert - see below.** |
+| `dependency-review` | `ubuntu-latest` | Pull requests only. **Currently neither runs nor blocks - see below.** |
 | `pip-audit` | `ubuntu-latest` | Audits the platform-independent dependency set. **Enforcing** - it fails the job on any known vulnerability affecting a declared dependency. See "Severity policy" below. |
 
-### `dependency-review` needs a repository setting that is currently OFF
+### `dependency-review`: two separate things are currently false
 
-`actions/dependency-review-action` requires the repository's **Dependency
-graph** feature. It is not enabled here, so the action reports *"Dependency
-review is not supported on this repository"* and the step is marked
-`continue-on-error` so it does not block an otherwise-green PR.
+It is worth being precise, because "enabled" can mean either of two things and
+neither is true right now:
+
+| Question | Answer today |
+|---|---|
+| Does the action **run** (actually review the diff)? | **No.** It requires the repository's **Dependency graph** feature, which is off, so it reports *"Dependency review is not supported on this repository"*. |
+| Can the job **block a PR** if it finds something? | **No.** The step carries `continue-on-error: true`, so even a real finding would not fail the job. |
 
 **Do not read a green tick on this job as "dependencies were reviewed."** The
-job prints a warning annotation saying so whenever the review did not actually
-run. `pip-audit` is the dependency scanning that genuinely runs today.
+job prints a warning annotation saying exactly that whenever the review did not
+run. `pip-audit` is the dependency scanning that genuinely runs and genuinely
+blocks today.
 
-To activate it, a repository admin enables **Dependency graph** under
-Settings -> Code security. That is a repository settings change and is
-deliberately left to the owner rather than made automatically. The job is wired
-up and left in place so that flipping the setting is the only action needed.
+**Enabling Dependency graph alone does NOT make this enforcing.** It would make
+the action *run*; the `continue-on-error: true` would still stop it failing the
+job. Making it enforcing is therefore two deliberate changes:
+
+1. A repository admin enables **Dependency graph** under Settings -> Code
+   security. This is a repository security setting and is the owner's decision;
+   it is deliberately not made automatically.
+2. Someone removes `continue-on-error: true` from the step in `ci.yml`, in a PR
+   that says so.
+
+The job is wired up and left in place so that step 1 is all that is needed to
+start getting real signal, and step 2 is a conscious choice to start enforcing
+on it.
 
 Enabling Dependency graph is also the prerequisite for Dependabot *security*
 updates (currently disabled); Dependabot *version* updates, configured in

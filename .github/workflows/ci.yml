@@ -124,16 +124,24 @@ jobs:
           fi
           echo "No registration or credential-serialization markers in code."
 
-  # PREREQUISITE, NOT YET MET: this action requires the repository's
-  # Dependency graph feature to be enabled (Settings -> Code security ->
-  # Dependency graph). It is currently OFF for this repository, so the step is
-  # non-blocking and reports "not supported on this repository" instead of
-  # reviewing anything.
+  # THIS JOB NEITHER RUNS NOR BLOCKS TODAY. Two separate things are false, and
+  # conflating them would be misleading:
   #
-  # It is left wired up, rather than deleted, so that turning the setting on is
-  # the only action needed to make it live. Until then, `pip-audit` below is
-  # the dependency scanning that actually runs. Do not read a green tick on
-  # this job as "dependencies were reviewed" until the setting is enabled.
+  #   1. It does not RUN. The action needs the repository's Dependency graph
+  #      feature (Settings -> Code security), which is OFF, so it reports
+  #      "not supported on this repository" instead of reviewing anything.
+  #   2. It could not BLOCK even if it ran, because of the
+  #      `continue-on-error: true` below.
+  #
+  # Enabling Dependency graph alone would fix (1) but NOT (2) - making this
+  # enforcing also means deliberately removing `continue-on-error`, in a PR
+  # that says so. Enabling the setting is a repository security change and is
+  # the owner's decision, not something to do silently from CI.
+  #
+  # Until both happen, `pip-audit` below is the dependency scanning that
+  # actually runs and actually blocks. Do not read a green tick on this job as
+  # "dependencies were reviewed" - the step below prints a warning annotation
+  # whenever the review did not run.
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
@@ -160,7 +168,9 @@ jobs:
           else
             echo "::warning::Dependency review did NOT run. Enable Dependency graph at" \
                  "https://github.com/${{ github.repository }}/settings/security_analysis" \
-                 "to activate it. pip-audit is covering dependency scanning meanwhile."
+                 "to make it run; removing continue-on-error in ci.yml is a separate" \
+                 "change needed to make it block. pip-audit covers dependency" \
+                 "scanning meanwhile."
           fi
 
   pip-audit:

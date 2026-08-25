@@ -24,7 +24,7 @@ tested now, before any privileged component is written.
 | `include/faceauth/ipc/transport.hpp`, `src/transport_*.cpp` | In-memory transport, and a user-owned loopback named pipe |
 | `include/faceauth/ipc/fake_peer.hpp`, `src/fake_peer.cpp` | Fake client and fake server |
 | `tools/fake_peer_main.cpp` | `faceauth_ipc_fake` - runs one protocol exchange |
-| `tests/test_protocol.cpp` | 56 protocol test cases |
+| `tests/test_protocol.cpp` | 70 protocol test cases |
 | `tests/test_named_pipe.cpp` | 8 Windows named-pipe test cases, all with CTest timeouts |
 
 ## What is deliberately absent
@@ -141,10 +141,15 @@ Plus service-restart behaviour, replay-cache eviction and its fail-closed full
 state, result-lifetime capping, opaque-field length caps, CSPRNG quality, and
 the privacy properties of the diagnostics layer.
 
-**Totals on Windows:** 56 named protocol tests + 8 named-pipe tests + 1
+**Totals on Windows:** 70 named protocol tests + 8 named-pipe tests + 1
 aggregate entry (`protocol.all_registered_tests`) + 3 fake-peer entries =
-**68 CTest entries**. On a non-Windows host the 8 named-pipe entries and 1
-fake-peer entry are not registered.
+**82 CTest entries**. On a non-Windows host the 8 named-pipe entries and 1
+fake-peer entry are not registered, leaving 73.
+
+The lists in `CMakeLists.txt` are generated from, and cross-checked against, the
+`FACEAUTH_TEST(...)` declarations in the sources - a test that exists in a
+source file but is missing from the list is caught by
+`protocol.all_registered_tests`, which runs everything the binary knows about.
 
 ## Bounded I/O is a tested property, not a claim
 

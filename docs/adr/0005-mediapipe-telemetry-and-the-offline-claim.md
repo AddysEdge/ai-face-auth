@@ -3,6 +3,7 @@
 - **Status:** **Proposed - decision OPEN.** Nothing here is chosen yet. This ADR
   exists to record the problem, the evidence, and the viable options, so the
   choice is made deliberately rather than by default.
+- **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
 - **Phase:** Phase 1 correction, and a **Phase 3 entry gate**.
 - **Blocker:** **B17** - see section 8.

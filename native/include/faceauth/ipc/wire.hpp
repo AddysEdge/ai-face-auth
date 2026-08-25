@@ -5,6 +5,7 @@
 //   2. magic matches                            -> else MalformedMessage
 //   3. protocol_version == kProtocolVersion     -> else UnsupportedVersion
 //   4. message_type is known                    -> else UnknownMessageType
+//      (type 3 is reserved and unassigned in v1, so it lands here too)
 //   5. reserved == 0                            -> else MalformedMessage
 //   6. payload_length <= kMaxPayloadBytes       -> else MessageTooLarge
 //                                                  (checked BEFORE allocating)
@@ -34,14 +35,13 @@ struct MessageHeader {
     std::uint32_t reserved = 0;
 };
 
-// A decoded message. Exactly one of the four bodies is meaningful, selected by
-// `type`. A tagged union would be tidier; four plain members keep the type
+// A decoded message. Exactly one of the three bodies is meaningful, selected
+// by `type`. A tagged union would be tidier; three plain members keep the type
 // trivially inspectable in a debugger and cost nothing at this size.
 struct DecodedMessage {
     MessageType type = MessageType::ProtocolError;
     VerifyRequest request{};
     VerifyResult result{};
-    CancelRequest cancel{};
     ProtocolErrorMessage error{};
 };
 
@@ -57,7 +57,6 @@ struct DecodeResult {
 // internal error rather than sending a truncated message.
 std::vector<std::uint8_t> encode(const VerifyRequest& message);
 std::vector<std::uint8_t> encode(const VerifyResult& message);
-std::vector<std::uint8_t> encode(const CancelRequest& message);
 std::vector<std::uint8_t> encode(const ProtocolErrorMessage& message);
 
 // Parses only the fixed header. Used by a transport that must know how many

@@ -16,12 +16,6 @@ void put_u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     }
 }
 
-void put_u64(std::vector<std::uint8_t>& out, std::uint64_t value) {
-    for (int shift = 0; shift < 64; shift += 8) {
-        out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFFu));
-    }
-}
-
 void put_bytes(std::vector<std::uint8_t>& out, const std::uint8_t* data, std::size_t length) {
     out.insert(out.end(), data, data + length);
 }
@@ -64,17 +58,6 @@ public:
             value |= static_cast<std::uint32_t>(data_[offset_ + i]) << (8u * i);
         }
         offset_ += 4u;
-        out = value;
-        return true;
-    }
-
-    bool read_u64(std::uint64_t& out) {
-        if (remaining() < 8u) return false;
-        std::uint64_t value = 0;
-        for (std::size_t i = 0; i < 8u; ++i) {
-            value |= static_cast<std::uint64_t>(data_[offset_ + i]) << (8u * i);
-        }
-        offset_ += 8u;
         out = value;
         return true;
     }
@@ -127,9 +110,11 @@ std::vector<std::uint8_t> frame(MessageType type, const std::vector<std::uint8_t
 }
 
 bool is_known_type(std::uint16_t raw) {
+    // Type 3 is deliberately absent: it is reserved and unassigned in
+    // protocol version 1 (see MessageType in protocol.hpp), so it is rejected
+    // as an unknown type rather than silently accepted.
     return raw == static_cast<std::uint16_t>(MessageType::VerifyRequest) ||
            raw == static_cast<std::uint16_t>(MessageType::VerifyResult) ||
-           raw == static_cast<std::uint16_t>(MessageType::CancelRequest) ||
            raw == static_cast<std::uint16_t>(MessageType::ProtocolError);
 }
 
@@ -151,7 +136,7 @@ std::vector<std::uint8_t> encode(const VerifyRequest& message) {
     put_opaque(payload, message.account_binding);
     put_u32(payload, message.session_id);
     put_opaque(payload, message.desktop_binding);
-    put_u64(payload, message.deadline_unix_ms);
+    put_u32(payload, message.requested_lifetime_ms);
     put_u32(payload, message.flags);
     return frame(MessageType::VerifyRequest, payload);
 }
@@ -167,14 +152,8 @@ std::vector<std::uint8_t> encode(const VerifyResult& message) {
     put_opaque(payload, message.account_binding);
     payload.push_back(static_cast<std::uint8_t>(message.outcome));
     put_u16(payload, message.reason_code);
-    put_u64(payload, message.expires_unix_ms);
+    put_u32(payload, message.result_ttl_ms);
     return frame(MessageType::VerifyResult, payload);
-}
-
-std::vector<std::uint8_t> encode(const CancelRequest& message) {
-    std::vector<std::uint8_t> payload;
-    put_bytes(payload, message.request_id.data(), message.request_id.size());
-    return frame(MessageType::CancelRequest, payload);
 }
 
 std::vector<std::uint8_t> encode(const ProtocolErrorMessage& message) {
@@ -247,11 +226,20 @@ DecodeResult decode_message(const std::uint8_t* data, std::size_t length) {
                 !reader.read_opaque(message.account_binding, kMaxAccountBindingBytes) ||
                 !reader.read_u32(message.session_id) ||
                 !reader.read_opaque(message.desktop_binding, kMaxDesktopBindingBytes) ||
-                !reader.read_u64(message.deadline_unix_ms) || !reader.read_u32(message.flags)) {
+                !reader.read_u32(message.requested_lifetime_ms) ||
+                !reader.read_u32(message.flags)) {
                 result.error = ErrorCode::TruncatedMessage;
                 return result;
             }
             if (message.account_binding.empty()) {
+                result.error = ErrorCode::MalformedMessage;
+                return result;
+            }
+            // A zero or over-long lifetime is nonsense, not something to
+            // silently clamp at parse time - the server clamps deliberately,
+            // and the parser refuses input it cannot represent honestly.
+            if (message.requested_lifetime_ms == 0u ||
+                message.requested_lifetime_ms > kMaxRequestLifetimeMs) {
                 result.error = ErrorCode::MalformedMessage;
                 return result;
             }
@@ -269,7 +257,7 @@ DecodeResult decode_message(const std::uint8_t* data, std::size_t length) {
                 !reader.read_fixed(message.nonce.data(), message.nonce.size()) ||
                 !reader.read_opaque(message.account_binding, kMaxAccountBindingBytes) ||
                 !reader.read_u8(outcome_raw) || !reader.read_u16(message.reason_code) ||
-                !reader.read_u64(message.expires_unix_ms)) {
+                !reader.read_u32(message.result_ttl_ms)) {
                 result.error = ErrorCode::TruncatedMessage;
                 return result;
             }
@@ -285,12 +273,8 @@ DecodeResult decode_message(const std::uint8_t* data, std::size_t length) {
                 return result;
             }
             message.outcome = static_cast<Outcome>(outcome_raw);
-            break;
-        }
-        case MessageType::CancelRequest: {
-            CancelRequest& message = result.message.cancel;
-            if (!reader.read_fixed(message.request_id.data(), message.request_id.size())) {
-                result.error = ErrorCode::TruncatedMessage;
+            if (message.result_ttl_ms > kMaxResultValidityMs) {
+                result.error = ErrorCode::MalformedMessage;
                 return result;
             }
             break;

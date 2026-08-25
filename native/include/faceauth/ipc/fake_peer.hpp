@@ -12,6 +12,8 @@
 //
 // Their only job is to prove the contract in ADR-0003 behaves as specified,
 // including all of its failure paths.
+//
+// Both take a MonotonicClock. No wall clock is involved anywhere.
 
 #ifndef FACEAUTH_IPC_FAKE_PEER_HPP
 #define FACEAUTH_IPC_FAKE_PEER_HPP
@@ -44,20 +46,30 @@ struct FakeClientOptions {
     std::string test_identity = "opaque-test-identity-a";
     std::uint32_t session_id = 0;
     std::string test_desktop = "opaque-test-desktop";
-    std::uint64_t request_lifetime_ms = 10000;
+
+    // Relative, bounded. Not a point in time.
+    std::uint32_t requested_lifetime_ms = 10000;
+
     std::uint32_t receive_timeout_ms = 3000;
-    bool cancel_immediately = false;
+    std::uint32_t send_timeout_ms = 3000;
+
+    // Stop waiting locally, without sending anything. Version 1 has no
+    // cancellation message; see MessageType in protocol.hpp.
+    bool abandon_after_send = false;
 };
 
 // Drives one full client exchange over `transport`. Returns a DENY on every
 // error path, without exception.
 FakeClientResult run_fake_client(Transport& transport, const FakeClientOptions& options,
-                                 Clock& wall_clock, DiagnosticSink& diagnostics);
+                                 MonotonicClock& mono_clock, DiagnosticSink& diagnostics);
 
-// Serves exactly one exchange over `transport`.
+// Serves exactly one exchange over `transport`. `gate` is optional; when
+// supplied it is applied around the verification, so two concurrent fake
+// servers sharing one gate genuinely contend.
 ErrorCode run_fake_server(Transport& transport, IVerificationBackend& backend,
-                          ReplayCache& replay_cache, Clock& wall_clock, DiagnosticSink& diagnostics,
-                          std::uint32_t receive_timeout_ms = 3000);
+                          ReplayCache& replay_cache, MonotonicClock& mono_clock,
+                          DiagnosticSink& diagnostics, std::uint32_t receive_timeout_ms = 3000,
+                          ConcurrencyGate* gate = nullptr);
 
 // Converts an opaque test identity string into the wire binding. Exposed so
 // tests can construct a deliberately mismatched binding.

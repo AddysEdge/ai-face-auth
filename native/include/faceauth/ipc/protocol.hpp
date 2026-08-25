@@ -12,9 +12,13 @@
 // The message set below deliberately has NO free-form field, NO blob, and NO
 // unbounded-length value. That is a security property, not an oversight: it is
 // what makes "this channel can never carry a frame, an embedding, a template,
-// a password, a certificate, a key, or a reusable assertion" checkable by
-// reading one header instead of by trusting a policy document. Adding such a
-// field would require a protocol version bump and a fresh security review.
+// a password, a PIN, a certificate, a key, or a reusable assertion" checkable
+// by reading one header instead of by trusting a policy document. Adding such
+// a field would require a protocol version bump and a fresh security review.
+//
+// NO ABSOLUTE TIMESTAMP APPEARS ON THE WIRE. Lifetimes are bounded, relative
+// millisecond durations, and each side derives its own deadline from its own
+// monotonic clock. See clock.hpp for why.
 
 #ifndef FACEAUTH_IPC_PROTOCOL_HPP
 #define FACEAUTH_IPC_PROTOCOL_HPP
@@ -40,9 +44,10 @@ inline constexpr std::size_t kNonceBytes = 32u;
 inline constexpr std::size_t kMaxAccountBindingBytes = 128u;
 inline constexpr std::size_t kMaxDesktopBindingBytes = 64u;
 
-// Normative limits from ADR-0003 section 5.6.
-inline constexpr std::uint64_t kMaxRequestLifetimeMs = 30000u;
-inline constexpr std::uint64_t kMaxResultValidityMs = 5000u;
+// Normative limits from ADR-0003 section 5.6. All durations are relative
+// milliseconds, enforced against a local monotonic clock.
+inline constexpr std::uint32_t kMaxRequestLifetimeMs = 30000u;
+inline constexpr std::uint32_t kMaxResultValidityMs = 5000u;
 inline constexpr std::size_t kReplayCacheCapacity = 1024u;
 inline constexpr std::size_t kMaxConcurrentConnections = 4u;
 inline constexpr std::size_t kMaxInFlightVerifications = 1u;
@@ -51,7 +56,18 @@ inline constexpr std::uint32_t kIdleTimeoutMs = 5000u;
 enum class MessageType : std::uint16_t {
     VerifyRequest = 1,
     VerifyResult = 2,
-    CancelRequest = 3,
+    // 3 is RESERVED and permanently unassigned in protocol version 1.
+    //
+    // It held a CancelRequest in an earlier draft. That was removed rather
+    // than kept, because a version-1 server processes a request synchronously
+    // and therefore cannot read a cancellation while a verification is in
+    // flight - so the message could only ever have been handled between
+    // requests, which is not cancellation. Shipping it would have meant
+    // claiming a control that did not exist.
+    //
+    // Real in-flight cancellation is a Phase 3 requirement and needs a
+    // protocol version bump plus a concurrent server. See ADR-0003 section 6.
+    // A message of type 3 is rejected as UnknownMessageType.
     ProtocolError = 4,
 };
 
@@ -72,7 +88,7 @@ enum class ErrorCode : std::uint16_t {
     ReplayedNonce = 6,
     RequestExpired = 7,
     Timeout = 8,
-    Cancelled = 9,
+    Abandoned = 9,
     InvalidStateTransition = 10,
     PeerDisconnected = 11,
     IdentityMismatch = 12,
@@ -102,7 +118,12 @@ struct VerifyRequest {
     OpaqueBinding account_binding{};
     std::uint32_t session_id = 0;
     OpaqueBinding desktop_binding{};
-    std::uint64_t deadline_unix_ms = 0;
+
+    // A bounded RELATIVE duration, not a point in time. The client asks for at
+    // most this long; the server independently clamps it and starts its own
+    // monotonic deadline on arrival. Neither side trusts the other's clock.
+    std::uint32_t requested_lifetime_ms = 0;
+
     std::uint32_t flags = 0;
 };
 
@@ -112,11 +133,11 @@ struct VerifyResult {
     OpaqueBinding account_binding{};
     Outcome outcome = Outcome::Deny;
     std::uint16_t reason_code = 0;
-    std::uint64_t expires_unix_ms = 0;
-};
 
-struct CancelRequest {
-    RequestId request_id{};
+    // Again relative, not absolute. The client clamps this to
+    // kMaxResultValidityMs AND to its own already-running request deadline, so
+    // a result can only ever shorten the client's window, never extend it.
+    std::uint32_t result_ttl_ms = 0;
 };
 
 struct ProtocolErrorMessage {

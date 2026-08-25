@@ -25,8 +25,10 @@
 #ifndef FACEAUTH_IPC_BOUNDARIES_HPP
 #define FACEAUTH_IPC_BOUNDARIES_HPP
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -44,10 +46,18 @@ public:
     virtual ~IVerificationBackend() = default;
 
     // Phase 3: run the face + liveness pipeline and return a decision.
-    // Phase 2: only ScriptedVerificationBackend implements this, and it
-    // returns a simulated value with no biometric processing whatsoever.
+    // Phase 2: only the test doubles below implement this, and they return a
+    // simulated value with no biometric processing whatsoever.
+    //
+    // `now_steady_ms` is the server's own monotonic clock reading. No wall
+    // clock and no peer-supplied timestamp reaches this boundary.
+    //
+    // NOTE: in protocol version 1 this call is SYNCHRONOUS, which is exactly
+    // why in-flight cancellation does not exist (see MessageType in
+    // protocol.hpp and ADR-0003 section 6). A Phase 3 backend would need an
+    // asynchronous/event-loop shape before cancellation is meaningful.
     virtual VerificationDecision verify(const VerifyRequest& request,
-                                        std::uint64_t now_unix_ms) = 0;
+                                        std::uint64_t now_steady_ms) = 0;
 };
 
 // NOT IMPLEMENTED ANYWHERE, BY DESIGN. See the file header.
@@ -71,13 +81,41 @@ public:
     explicit ScriptedVerificationBackend(std::vector<VerificationDecision> script)
         : script_(std::move(script)) {}
 
-    VerificationDecision verify(const VerifyRequest& request, std::uint64_t now_unix_ms) override;
+    VerificationDecision verify(const VerifyRequest& request,
+                                std::uint64_t now_steady_ms) override;
 
     std::size_t calls() const { return calls_; }
 
 private:
     std::vector<VerificationDecision> script_{};
     std::size_t calls_ = 0;
+};
+
+// Test double that BLOCKS inside verify() until it is released, so a test can
+// hold two verifications genuinely in flight at the same time. Without this,
+// a "concurrency" test on a synchronous backend would only ever be a sequence
+// of calls that never overlap - which proves nothing about admission control.
+class BlockingVerificationBackend : public IVerificationBackend {
+public:
+    explicit BlockingVerificationBackend(VerificationDecision decision) : decision_(decision) {}
+
+    VerificationDecision verify(const VerifyRequest& request,
+                                std::uint64_t now_steady_ms) override;
+
+    // Blocks until at least `count` callers are simultaneously inside verify().
+    void wait_until_entered(std::size_t count);
+
+    // Lets every blocked caller return.
+    void release_all();
+
+    std::size_t entered() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    VerificationDecision decision_;
+    std::size_t entered_ = 0;
+    bool released_ = false;
 };
 
 }  // namespace faceauth::ipc

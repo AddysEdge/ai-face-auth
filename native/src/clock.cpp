@@ -4,10 +4,10 @@
 
 namespace faceauth::ipc {
 
-std::uint64_t SystemClock::now_unix_ms() const {
-    const auto now = std::chrono::system_clock::now().time_since_epoch();
-    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-    return static_cast<std::uint64_t>(millis);
+std::uint64_t SteadyClock::steady_now_ms() const {
+    const auto since_epoch = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(since_epoch).count());
 }
 
 }  // namespace faceauth::ipc

@@ -61,15 +61,15 @@ int run_memory_exchange(Outcome scripted, const char* mode) {
 
     ScriptedVerificationBackend backend({VerificationDecision{scripted, 0}});
     ReplayCache replay_cache;
-    SystemClock wall_clock;
+    SteadyClock mono_clock;
     StdoutSink diagnostics;
 
     std::thread server_thread([&]() {
-        run_fake_server(*server_side, backend, replay_cache, wall_clock, diagnostics, 3000);
+        run_fake_server(*server_side, backend, replay_cache, mono_clock, diagnostics, 3000);
     });
 
     FakeClientOptions options;
-    const FakeClientResult result = run_fake_client(*client_side, options, wall_clock, diagnostics);
+    const FakeClientResult result = run_fake_client(*client_side, options, mono_clock, diagnostics);
 
     server_thread.join();
     client_side->close();
@@ -89,7 +89,7 @@ int run_pipe_exchange() {
 
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache replay_cache;
-    SystemClock wall_clock;
+    SteadyClock mono_clock;
     StdoutSink diagnostics;
 
     FakeClientResult result{};
@@ -97,22 +97,25 @@ int run_pipe_exchange() {
 
     // The client retries until the pipe exists, so it can start first.
     std::thread client_thread([&]() {
-        client_side = make_named_pipe_client(pipe_name, 5000);
+        client_side = make_named_pipe_client(pipe_name, 5000, nullptr);
         if (!client_side) {
             result.error = ErrorCode::PeerDisconnected;
             return;
         }
         FakeClientOptions options;
-        result = run_fake_client(*client_side, options, wall_clock, diagnostics);
+        result = run_fake_client(*client_side, options, mono_clock, diagnostics);
     });
 
-    std::shared_ptr<Transport> server_side = make_named_pipe_server(pipe_name, 5000);
+    TransportStatus server_status = TransportStatus::Error;
+    std::shared_ptr<Transport> server_side =
+        make_named_pipe_server(pipe_name, 5000, &server_status);
     if (!server_side) {
         client_thread.join();
-        std::puts("[pipe] failed to create the loopback pipe");
+        std::printf("[pipe] failed to create the loopback pipe (%s)\n",
+                    to_string(server_status));
         return 1;
     }
-    run_fake_server(*server_side, backend, replay_cache, wall_clock, diagnostics, 5000);
+    run_fake_server(*server_side, backend, replay_cache, mono_clock, diagnostics, 5000);
 
     client_thread.join();
     if (client_side) {

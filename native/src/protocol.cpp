@@ -11,7 +11,6 @@ const char* to_string(MessageType value) {
     switch (value) {
         case MessageType::VerifyRequest: return "VerifyRequest";
         case MessageType::VerifyResult: return "VerifyResult";
-        case MessageType::CancelRequest: return "CancelRequest";
         case MessageType::ProtocolError: return "ProtocolError";
     }
     return "Unknown";
@@ -36,7 +35,7 @@ const char* to_string(ErrorCode value) {
         case ErrorCode::ReplayedNonce: return "ReplayedNonce";
         case ErrorCode::RequestExpired: return "RequestExpired";
         case ErrorCode::Timeout: return "Timeout";
-        case ErrorCode::Cancelled: return "Cancelled";
+        case ErrorCode::Abandoned: return "Abandoned";
         case ErrorCode::InvalidStateTransition: return "InvalidStateTransition";
         case ErrorCode::PeerDisconnected: return "PeerDisconnected";
         case ErrorCode::IdentityMismatch: return "IdentityMismatch";
@@ -83,13 +82,13 @@ bool operator==(const VerifyRequest& lhs, const VerifyRequest& rhs) {
     return lhs.request_id == rhs.request_id && lhs.nonce == rhs.nonce &&
            lhs.account_binding == rhs.account_binding && lhs.session_id == rhs.session_id &&
            lhs.desktop_binding == rhs.desktop_binding &&
-           lhs.deadline_unix_ms == rhs.deadline_unix_ms && lhs.flags == rhs.flags;
+           lhs.requested_lifetime_ms == rhs.requested_lifetime_ms && lhs.flags == rhs.flags;
 }
 
 bool operator==(const VerifyResult& lhs, const VerifyResult& rhs) {
     return lhs.request_id == rhs.request_id && lhs.nonce == rhs.nonce &&
            lhs.account_binding == rhs.account_binding && lhs.outcome == rhs.outcome &&
-           lhs.reason_code == rhs.reason_code && lhs.expires_unix_ms == rhs.expires_unix_ms;
+           lhs.reason_code == rhs.reason_code && lhs.result_ttl_ms == rhs.result_ttl_ms;
 }
 
 }  // namespace faceauth::ipc

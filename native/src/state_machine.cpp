@@ -20,6 +20,12 @@ std::vector<std::uint8_t> make_error_reply(const RequestId& request_id, ErrorCod
     return encode(message);
 }
 
+std::uint32_t clamp_lifetime(std::uint32_t requested) {
+    return (requested < kMaxRequestLifetimeMs) ? requested : kMaxRequestLifetimeMs;
+}
+
+std::uint64_t min_u64(std::uint64_t a, std::uint64_t b) { return (a < b) ? a : b; }
+
 }  // namespace
 
 const char* to_string(ClientState state) {
@@ -28,7 +34,7 @@ const char* to_string(ClientState state) {
         case ClientState::AwaitingResult: return "AwaitingResult";
         case ClientState::ResultAvailable: return "ResultAvailable";
         case ClientState::Consumed: return "Consumed";
-        case ClientState::Cancelled: return "Cancelled";
+        case ClientState::Abandoned: return "Abandoned";
         case ClientState::Failed: return "Failed";
     }
     return "Unknown";
@@ -39,7 +45,6 @@ const char* to_string(ServerState state) {
         case ServerState::Idle: return "Idle";
         case ServerState::Processing: return "Processing";
         case ServerState::Responded: return "Responded";
-        case ServerState::Cancelled: return "Cancelled";
         case ServerState::Failed: return "Failed";
     }
     return "Unknown";
@@ -51,13 +56,13 @@ const char* to_string(ServerState state) {
 
 ClientSession::ClientSession(RequestId request_id, Nonce nonce, OpaqueBinding account_binding,
                              std::uint32_t session_id, OpaqueBinding desktop_binding,
-                             std::uint64_t deadline_unix_ms) {
+                             std::uint32_t requested_lifetime_ms) {
     request_.request_id = request_id;
     request_.nonce = nonce;
     request_.account_binding = std::move(account_binding);
     request_.session_id = session_id;
     request_.desktop_binding = std::move(desktop_binding);
-    request_.deadline_unix_ms = deadline_unix_ms;
+    request_.requested_lifetime_ms = clamp_lifetime(requested_lifetime_ms);
     request_.flags = 0u;
 }
 
@@ -67,10 +72,19 @@ ErrorCode ClientSession::fail(ErrorCode error) {
     return error;
 }
 
-ErrorCode ClientSession::start(std::vector<std::uint8_t>& out_message) {
+ErrorCode ClientSession::start(std::uint64_t now_steady_ms,
+                               std::vector<std::uint8_t>& out_message) {
     if (state_ != ClientState::Idle) {
         return fail(ErrorCode::InvalidStateTransition);
     }
+    if (request_.requested_lifetime_ms == 0u) {
+        return fail(ErrorCode::LimitExceeded);
+    }
+
+    // The client's own deadline starts here, from the client's own clock,
+    // BEFORE the message leaves. Nothing the server later says can move it.
+    request_deadline_steady_ms_ = now_steady_ms + request_.requested_lifetime_ms;
+
     out_message = encode(request_);
     if (out_message.empty()) {
         return fail(ErrorCode::InternalError);
@@ -80,7 +94,7 @@ ErrorCode ClientSession::start(std::vector<std::uint8_t>& out_message) {
 }
 
 ErrorCode ClientSession::on_message(const std::vector<std::uint8_t>& message,
-                                    std::uint64_t now_unix_ms) {
+                                    std::uint64_t now_steady_ms) {
     if (state_ != ClientState::AwaitingResult) {
         return fail(ErrorCode::InvalidStateTransition);
     }
@@ -104,9 +118,19 @@ ErrorCode ClientSession::on_message(const std::vector<std::uint8_t>& message,
                                      request_.account_binding.size())) {
                 return fail(ErrorCode::IdentityMismatch);
             }
-            if (now_unix_ms > request_.deadline_unix_ms) {
+            // The client's own deadline, on the client's own clock.
+            if (now_steady_ms > request_deadline_steady_ms_) {
                 return fail(ErrorCode::RequestExpired);
             }
+
+            // Result validity = min(received TTL, protocol max, whatever is
+            // left of this client's own request window). A peer-supplied TTL
+            // can only shorten the window - never extend it.
+            const std::uint64_t ttl =
+                min_u64(static_cast<std::uint64_t>(result.result_ttl_ms), kMaxResultValidityMs);
+            result_deadline_steady_ms_ =
+                min_u64(now_steady_ms + ttl, request_deadline_steady_ms_);
+
             result_ = result;
             state_ = ClientState::ResultAvailable;
             return ErrorCode::None;
@@ -114,16 +138,15 @@ ErrorCode ClientSession::on_message(const std::vector<std::uint8_t>& message,
         case MessageType::ProtocolError:
             return fail(decoded.message.error.error_code);
         case MessageType::VerifyRequest:
-        case MessageType::CancelRequest:
-            // A client never receives these. Receiving one means the peer is
+            // A client never receives this. Receiving one means the peer is
             // not what it claims to be.
             return fail(ErrorCode::InvalidStateTransition);
     }
     return fail(ErrorCode::UnknownMessageType);
 }
 
-ErrorCode ClientSession::on_timeout(std::uint64_t now_unix_ms) {
-    (void)now_unix_ms;
+ErrorCode ClientSession::on_timeout(std::uint64_t now_steady_ms) {
+    (void)now_steady_ms;
     if (state_ != ClientState::AwaitingResult) {
         return fail(ErrorCode::InvalidStateTransition);
     }
@@ -138,22 +161,18 @@ ErrorCode ClientSession::on_peer_disconnect() {
     return fail(ErrorCode::PeerDisconnected);
 }
 
-ErrorCode ClientSession::cancel(std::vector<std::uint8_t>& out_message) {
+ErrorCode ClientSession::abandon() {
     if (state_ != ClientState::AwaitingResult && state_ != ClientState::ResultAvailable) {
         return fail(ErrorCode::InvalidStateTransition);
     }
-    CancelRequest message{};
-    message.request_id = request_.request_id;
-    out_message = encode(message);
-    if (out_message.empty()) {
-        return fail(ErrorCode::InternalError);
-    }
-    state_ = ClientState::Cancelled;
-    last_error_ = ErrorCode::Cancelled;
-    return ErrorCode::None;
+    // Local only. Version 1 has no cancellation message, so the server is not
+    // notified; its own monotonic deadline releases its side.
+    state_ = ClientState::Abandoned;
+    last_error_ = ErrorCode::Abandoned;
+    return ErrorCode::Abandoned;
 }
 
-ErrorCode ClientSession::consume(std::uint64_t now_unix_ms, Outcome& out_outcome) {
+ErrorCode ClientSession::consume(std::uint64_t now_steady_ms, Outcome& out_outcome) {
     out_outcome = Outcome::Deny;
 
     if (state_ == ClientState::Consumed) {
@@ -164,7 +183,8 @@ ErrorCode ClientSession::consume(std::uint64_t now_unix_ms, Outcome& out_outcome
     if (state_ != ClientState::ResultAvailable) {
         return fail(ErrorCode::InvalidStateTransition);
     }
-    if (now_unix_ms > result_.expires_unix_ms || now_unix_ms > request_.deadline_unix_ms) {
+    if (now_steady_ms > result_deadline_steady_ms_ ||
+        now_steady_ms > request_deadline_steady_ms_) {
         return fail(ErrorCode::RequestExpired);
     }
 
@@ -178,8 +198,9 @@ ErrorCode ClientSession::consume(std::uint64_t now_unix_ms, Outcome& out_outcome
 // ServerSession
 // ---------------------------------------------------------------------------
 
-ServerSession::ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache)
-    : backend_(backend), replay_cache_(replay_cache) {}
+ServerSession::ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache,
+                             ConcurrencyGate* gate)
+    : backend_(backend), replay_cache_(replay_cache), gate_(gate) {}
 
 ErrorCode ServerSession::fail(ErrorCode error, const RequestId& request_id,
                               std::vector<std::uint8_t>& out_message) {
@@ -190,7 +211,7 @@ ErrorCode ServerSession::fail(ErrorCode error, const RequestId& request_id,
 }
 
 ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
-                                    std::uint64_t now_unix_ms,
+                                    std::uint64_t now_steady_ms,
                                     std::vector<std::uint8_t>& out_message) {
     out_message.clear();
 
@@ -209,24 +230,42 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
             }
             const VerifyRequest& request = decoded.message.request;
 
-            if (request.deadline_unix_ms <= now_unix_ms) {
-                return fail(ErrorCode::RequestExpired, request.request_id, out_message);
-            }
-            // A caller cannot buy itself an unbounded window by asking for one.
-            if (request.deadline_unix_ms - now_unix_ms > kMaxRequestLifetimeMs) {
+            // The parser already rejects zero and over-max lifetimes, but the
+            // server re-checks rather than trusting an upstream guarantee.
+            if (request.requested_lifetime_ms == 0u ||
+                request.requested_lifetime_ms > kMaxRequestLifetimeMs) {
                 return fail(ErrorCode::LimitExceeded, request.request_id, out_message);
             }
 
-            const ErrorCode replay = replay_cache_.observe(request.request_id, request.nonce,
-                                                           request.deadline_unix_ms, now_unix_ms);
+            // The server's OWN deadline, from the server's OWN clock, created
+            // on arrival. The client's clock is never consulted.
+            const std::uint64_t effective_lifetime = clamp_lifetime(request.requested_lifetime_ms);
+            request_deadline_steady_ms_ = now_steady_ms + effective_lifetime;
+
+            const ErrorCode replay =
+                replay_cache_.observe(request.request_id, request.nonce,
+                                      request_deadline_steady_ms_, now_steady_ms);
             if (replay != ErrorCode::None) {
                 return fail(replay, request.request_id, out_message);
+            }
+
+            // Admission control, when a gate was supplied. A second concurrent
+            // verification is refused outright rather than queued.
+            if (gate_ != nullptr) {
+                const ErrorCode admission = gate_->acquire();
+                if (admission != ErrorCode::None) {
+                    return fail(admission, request.request_id, out_message);
+                }
             }
 
             active_request_ = request;
             state_ = ServerState::Processing;
 
-            const VerificationDecision decision = backend_.verify(request, now_unix_ms);
+            const VerificationDecision decision = backend_.verify(request, now_steady_ms);
+
+            if (gate_ != nullptr) {
+                gate_->release();
+            }
 
             VerifyResult result{};
             result.request_id = request.request_id;
@@ -234,10 +273,10 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
             result.account_binding = request.account_binding;
             result.outcome = decision.outcome;
             result.reason_code = decision.reason_code;
-            // Short-lived, and never outliving the request that produced it.
-            const std::uint64_t validity_end = now_unix_ms + kMaxResultValidityMs;
-            result.expires_unix_ms =
-                (validity_end < request.deadline_unix_ms) ? validity_end : request.deadline_unix_ms;
+            // Short-lived, and never longer than what remains of the server's
+            // own window for this request. Sent as a relative TTL only.
+            result.result_ttl_ms = static_cast<std::uint32_t>(
+                min_u64(kMaxResultValidityMs, effective_lifetime));
 
             out_message = encode(result);
             if (out_message.empty()) {
@@ -247,20 +286,6 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
             last_error_ = ErrorCode::None;
             return ErrorCode::None;
         }
-        case MessageType::CancelRequest: {
-            if (state_ != ServerState::Processing) {
-                return fail(ErrorCode::InvalidStateTransition, decoded.message.cancel.request_id,
-                            out_message);
-            }
-            if (!constant_time_equal(decoded.message.cancel.request_id.data(),
-                                     active_request_.request_id.data(), kRequestIdBytes)) {
-                return fail(ErrorCode::IdentityMismatch, decoded.message.cancel.request_id,
-                            out_message);
-            }
-            state_ = ServerState::Cancelled;
-            last_error_ = ErrorCode::Cancelled;
-            return ErrorCode::Cancelled;
-        }
         case MessageType::VerifyResult:
         case MessageType::ProtocolError:
             // A server never receives these from a well-behaved client.
@@ -269,9 +294,9 @@ ErrorCode ServerSession::on_message(const std::vector<std::uint8_t>& message,
     return fail(ErrorCode::UnknownMessageType, zero_request_id(), out_message);
 }
 
-ErrorCode ServerSession::on_timeout(std::uint64_t now_unix_ms,
+ErrorCode ServerSession::on_timeout(std::uint64_t now_steady_ms,
                                     std::vector<std::uint8_t>& out_message) {
-    (void)now_unix_ms;
+    (void)now_steady_ms;
     out_message.clear();
     if (state_ != ServerState::Processing) {
         return fail(ErrorCode::InvalidStateTransition, zero_request_id(), out_message);
@@ -293,6 +318,7 @@ ErrorCode ServerSession::on_peer_disconnect() {
 // ---------------------------------------------------------------------------
 
 ErrorCode ConcurrencyGate::acquire() {
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (in_flight_ >= max_in_flight_) {
         return ErrorCode::Busy;
     }
@@ -301,9 +327,15 @@ ErrorCode ConcurrencyGate::acquire() {
 }
 
 void ConcurrencyGate::release() {
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (in_flight_ > 0u) {
         --in_flight_;
     }
+}
+
+std::size_t ConcurrencyGate::in_flight() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return in_flight_;
 }
 
 }  // namespace faceauth::ipc

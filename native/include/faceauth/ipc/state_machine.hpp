@@ -7,11 +7,30 @@
 // Neither class performs I/O. They consume and produce encoded messages, which
 // keeps them deterministically testable and keeps transport concerns (pipes,
 // timeouts, disconnects) out of the security logic.
+//
+// TIME BASE - the important part.
+//
+// Every `now_steady_ms` argument is the CALLER'S OWN monotonic clock reading
+// (clock.hpp). Neither side ever receives, sends, or trusts an absolute
+// timestamp:
+//
+//   * The client starts its own deadline before sending, from its own clock.
+//   * The request carries only a bounded, relative `requested_lifetime_ms`.
+//   * The server clamps that lifetime and starts its OWN deadline on arrival.
+//   * The result carries only a bounded, relative `result_ttl_ms`.
+//   * The client caps result validity by the smaller of its own remaining
+//     request lifetime, the received TTL, and the protocol maximum - so a
+//     result can only ever SHORTEN the client's window, never extend it.
+//
+// A wall-clock jump therefore cannot lengthen or shorten either side's
+// enforced validity, because no wall clock is consulted at any point.
 
 #ifndef FACEAUTH_IPC_STATE_MACHINE_HPP
 #define FACEAUTH_IPC_STATE_MACHINE_HPP
 
+#include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 #include "faceauth/ipc/boundaries.hpp"
@@ -25,7 +44,11 @@ enum class ClientState {
     AwaitingResult,
     ResultAvailable,
     Consumed,
-    Cancelled,
+    // The client stopped waiting. Purely local: protocol version 1 has no
+    // cancellation message, so nothing is sent and the server is not told.
+    // The server's own deadline cleans its side up. See MessageType in
+    // protocol.hpp for why real cancellation is deferred to Phase 3.
+    Abandoned,
     Failed,
 };
 
@@ -33,7 +56,6 @@ enum class ServerState {
     Idle,
     Processing,
     Responded,
-    Cancelled,
     Failed,
 };
 
@@ -45,31 +67,40 @@ const char* to_string(ServerState state);
 // ---------------------------------------------------------------------------
 class ClientSession {
 public:
+    // `requested_lifetime_ms` is a relative duration. It is clamped to
+    // kMaxRequestLifetimeMs; a zero value is rejected at start().
     ClientSession(RequestId request_id, Nonce nonce, OpaqueBinding account_binding,
                   std::uint32_t session_id, OpaqueBinding desktop_binding,
-                  std::uint64_t deadline_unix_ms);
+                  std::uint32_t requested_lifetime_ms);
 
     ClientState state() const { return state_; }
     ErrorCode last_error() const { return last_error_; }
     const VerifyRequest& request() const { return request_; }
 
-    // Idle -> AwaitingResult. Produces the encoded VerifyRequest.
-    ErrorCode start(std::vector<std::uint8_t>& out_message);
+    // Idle -> AwaitingResult. Starts this client's own monotonic deadline from
+    // `now_steady_ms` BEFORE producing the encoded VerifyRequest, so the
+    // window is already running when the message goes out.
+    ErrorCode start(std::uint64_t now_steady_ms, std::vector<std::uint8_t>& out_message);
 
     // Feeds one inbound message. Validates binding immediately: a result whose
     // request_id, nonce, or account_binding does not match this session is an
     // IdentityMismatch and terminates the session, never a retry.
-    ErrorCode on_message(const std::vector<std::uint8_t>& message, std::uint64_t now_unix_ms);
+    ErrorCode on_message(const std::vector<std::uint8_t>& message, std::uint64_t now_steady_ms);
 
-    ErrorCode on_timeout(std::uint64_t now_unix_ms);
+    ErrorCode on_timeout(std::uint64_t now_steady_ms);
     ErrorCode on_peer_disconnect();
 
-    // AwaitingResult -> Cancelled. Produces the encoded CancelRequest.
-    ErrorCode cancel(std::vector<std::uint8_t>& out_message);
+    // Local-only abandonment. Sends nothing - version 1 has no cancel message.
+    ErrorCode abandon();
 
     // The single-use gate. Succeeds exactly once, and only from
     // ResultAvailable with an unexpired result. Every other call fails.
-    ErrorCode consume(std::uint64_t now_unix_ms, Outcome& out_outcome);
+    ErrorCode consume(std::uint64_t now_steady_ms, Outcome& out_outcome);
+
+    // Test/observability accessors for the locally derived deadlines. These
+    // are this process's monotonic values and are never serialized.
+    std::uint64_t request_deadline_steady_ms() const { return request_deadline_steady_ms_; }
+    std::uint64_t result_deadline_steady_ms() const { return result_deadline_steady_ms_; }
 
 private:
     ErrorCode fail(ErrorCode error);
@@ -78,14 +109,22 @@ private:
     VerifyResult result_{};
     ClientState state_ = ClientState::Idle;
     ErrorCode last_error_ = ErrorCode::None;
+    std::uint64_t request_deadline_steady_ms_ = 0;
+    std::uint64_t result_deadline_steady_ms_ = 0;
 };
 
 // ---------------------------------------------------------------------------
 // Server side - what a Phase 3 verification service would drive.
 // ---------------------------------------------------------------------------
+class ConcurrencyGate;
+
 class ServerSession {
 public:
-    ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache);
+    // `gate` is optional. When supplied, the session must acquire it before
+    // running a verification and releases it afterwards; when null, no
+    // admission control is applied. See ConcurrencyGate for what that models.
+    ServerSession(IVerificationBackend& backend, ReplayCache& replay_cache,
+                  ConcurrencyGate* gate = nullptr);
 
     ServerState state() const { return state_; }
     ErrorCode last_error() const { return last_error_; }
@@ -93,11 +132,16 @@ public:
     // Handles one inbound message and, where a reply is due, writes the encoded
     // reply into `out_message`. Every rejection produces a ProtocolError reply
     // and moves to a terminal state; nothing is silently ignored.
-    ErrorCode on_message(const std::vector<std::uint8_t>& message, std::uint64_t now_unix_ms,
+    //
+    // `now_steady_ms` is the server's own monotonic reading; the server derives
+    // its own deadline from it rather than trusting anything from the client.
+    ErrorCode on_message(const std::vector<std::uint8_t>& message, std::uint64_t now_steady_ms,
                          std::vector<std::uint8_t>& out_message);
 
-    ErrorCode on_timeout(std::uint64_t now_unix_ms, std::vector<std::uint8_t>& out_message);
+    ErrorCode on_timeout(std::uint64_t now_steady_ms, std::vector<std::uint8_t>& out_message);
     ErrorCode on_peer_disconnect();
+
+    std::uint64_t request_deadline_steady_ms() const { return request_deadline_steady_ms_; }
 
 private:
     ErrorCode fail(ErrorCode error, const RequestId& request_id,
@@ -105,27 +149,41 @@ private:
 
     IVerificationBackend& backend_;
     ReplayCache& replay_cache_;
+    ConcurrencyGate* gate_;
     VerifyRequest active_request_{};
     ServerState state_ = ServerState::Idle;
     ErrorCode last_error_ = ErrorCode::None;
+    std::uint64_t request_deadline_steady_ms_ = 0;
 };
 
-// A machine-wide admission control for concurrent verifications
+// Machine-wide admission control for concurrent verifications
 // (ADR-0002 section 5.6: one camera, one verification at a time).
+//
+// SCOPE OF THE CLAIM: this is a small, thread-safe counting gate. When a
+// ServerSession is constructed with one, that session really does acquire it
+// before verifying and release it afterwards, so two concurrent sessions
+// sharing a gate cannot both run a verification. What it does NOT model is a
+// production service's connection accept loop, queueing, or fairness - those
+// are Phase 3 concerns.
 class ConcurrencyGate {
 public:
     explicit ConcurrencyGate(std::size_t max_in_flight = kMaxInFlightVerifications)
         : max_in_flight_(max_in_flight) {}
 
-    // Returns ErrorCode::Busy when a verification is already in flight. A
-    // second request is rejected outright rather than queued behind a camera
-    // lock, so the logon screen never waits on another user's attempt.
+    ConcurrencyGate(const ConcurrencyGate&) = delete;
+    ConcurrencyGate& operator=(const ConcurrencyGate&) = delete;
+
+    // Returns ErrorCode::Busy when the configured number of verifications is
+    // already in flight. A second request is rejected outright rather than
+    // queued behind a camera lock, so the logon screen never waits on another
+    // user's attempt.
     ErrorCode acquire();
     void release();
 
-    std::size_t in_flight() const { return in_flight_; }
+    std::size_t in_flight() const;
 
 private:
+    mutable std::mutex mutex_;
     std::size_t max_in_flight_;
     std::size_t in_flight_ = 0;
 };

@@ -282,13 +282,16 @@ FACEAUTH_TEST(client_deadline_is_derived_from_its_own_monotonic_clock) {
 FACEAUTH_TEST(server_deadline_is_derived_from_its_own_monotonic_clock) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
 
     // The server's clock reads something completely different from the
-    // client's. That must not matter: it derives its own deadline on arrival.
+    // client's. That must not matter: it derives its own deadline on arrival,
+    // from its own clock.
     const std::uint64_t server_now = kT0 + 5'000'000u;
+    ManualMonotonicClock server_clock(server_now);
+    ServerSession server(backend, cache, server_clock);
+
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(make_request(45)), server_now, reply) == ErrorCode::None);
+    CHECK(server.on_message(encode(make_request(45)), reply) == ErrorCode::None);
     CHECK(server.request_deadline_steady_ms() == server_now + kLifetimeMs);
 }
 
@@ -344,7 +347,8 @@ FACEAUTH_TEST(expiry_advances_only_with_the_injected_monotonic_clock) {
     // so a system-time jump - forwards or backwards - cannot reach it.
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(48, 2000u);
     ClientSession client = make_client(request);
@@ -354,7 +358,7 @@ FACEAUTH_TEST(expiry_advances_only_with_the_injected_monotonic_clock) {
     CHECK(client.start(mono_clock.steady_now_ms(), to_server) == ErrorCode::None);
 
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, mono_clock.steady_now_ms(), to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(client.on_message(to_client, mono_clock.steady_now_ms()) == ErrorCode::None);
 
     Outcome outcome = Outcome::Deny;
@@ -377,7 +381,8 @@ FACEAUTH_TEST(expiry_advances_only_with_the_injected_monotonic_clock) {
 FACEAUTH_TEST(valid_request_response_flow) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(6);
     ClientSession client = make_client(request);
@@ -387,7 +392,7 @@ FACEAUTH_TEST(valid_request_response_flow) {
     CHECK(client.state() == ClientState::AwaitingResult);
 
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(server.state() == ServerState::Responded);
     CHECK(!to_client.empty());
 
@@ -404,7 +409,8 @@ FACEAUTH_TEST(denied_verification_is_reported_as_deny) {
     ScriptedVerificationBackend backend({VerificationDecision{
         Outcome::Deny, static_cast<std::uint16_t>(ErrorCode::VerificationFailed)}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(7);
     ClientSession client = make_client(request);
@@ -412,7 +418,7 @@ FACEAUTH_TEST(denied_verification_is_reported_as_deny) {
     std::vector<std::uint8_t> to_server;
     CHECK(client.start(kT0, to_server) == ErrorCode::None);
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(client.on_message(to_client, kT0) == ErrorCode::None);
 
     Outcome outcome = Outcome::Allow;
@@ -438,13 +444,15 @@ FACEAUTH_TEST(duplicate_request_id_is_rejected) {
 
     const VerifyRequest first = make_request(9);
     std::vector<std::uint8_t> reply;
-    ServerSession server_a(backend, cache);
-    CHECK(server_a.on_message(encode(first), kT0, reply) == ErrorCode::None);
+    ManualMonotonicClock server_a_clock(kT0);
+    ServerSession server_a(backend, cache, server_a_clock);
+    CHECK(server_a.on_message(encode(first), reply) == ErrorCode::None);
 
     VerifyRequest second = first;
     second.nonce = make_nonce_value(0xEEu);
-    ServerSession server_b(backend, cache);
-    CHECK(server_b.on_message(encode(second), kT0, reply) == ErrorCode::DuplicateRequestId);
+    ManualMonotonicClock server_b_clock(kT0);
+    ServerSession server_b(backend, cache, server_b_clock);
+    CHECK(server_b.on_message(encode(second), reply) == ErrorCode::DuplicateRequestId);
     CHECK(server_b.state() == ServerState::Failed);
 
     const DecodeResult decoded = decode_message(reply);
@@ -460,13 +468,15 @@ FACEAUTH_TEST(replayed_nonce_is_rejected) {
 
     const VerifyRequest first = make_request(10);
     std::vector<std::uint8_t> reply;
-    ServerSession server_a(backend, cache);
-    CHECK(server_a.on_message(encode(first), kT0, reply) == ErrorCode::None);
+    ManualMonotonicClock server_a_clock(kT0);
+    ServerSession server_a(backend, cache, server_a_clock);
+    CHECK(server_a.on_message(encode(first), reply) == ErrorCode::None);
 
     VerifyRequest second = first;
     second.request_id = make_id(0xABu);
-    ServerSession server_b(backend, cache);
-    CHECK(server_b.on_message(encode(second), kT0, reply) == ErrorCode::ReplayedNonce);
+    ManualMonotonicClock server_b_clock(kT0);
+    ServerSession server_b(backend, cache, server_b_clock);
+    CHECK(server_b.on_message(encode(second), reply) == ErrorCode::ReplayedNonce);
     CHECK(server_b.state() == ServerState::Failed);
 }
 
@@ -530,16 +540,20 @@ FACEAUTH_TEST(replay_cache_is_safe_under_concurrent_observers) {
 // Deadlines and timeouts (session level)
 // ---------------------------------------------------------------------------
 
-FACEAUTH_TEST(expired_request_is_rejected_by_server) {
+FACEAUTH_TEST(zero_lifetime_request_is_rejected_before_the_backend_runs) {
+    // Renamed from `expired_request_is_rejected_by_server`, which overstated
+    // what it covered: a zero lifetime is a malformed request, not an expired
+    // one. Genuine expiry is covered by the `..._after_the_deadline_...` tests
+    // below.
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
-    // A zero lifetime is refused outright, and never reaches the backend.
     VerifyRequest request = make_request(11);
     request.requested_lifetime_ms = 0u;
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(request), kT0, reply) == ErrorCode::MalformedMessage);
+    CHECK(server.on_message(encode(request), reply) == ErrorCode::MalformedMessage);
     CHECK(server.state() == ServerState::Failed);
     CHECK(backend.calls() == 0u);
 }
@@ -547,12 +561,13 @@ FACEAUTH_TEST(expired_request_is_rejected_by_server) {
 FACEAUTH_TEST(server_clamps_the_requested_lifetime_to_the_protocol_maximum) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     // The maximum is accepted and produces exactly the maximum window.
     VerifyRequest request = make_request(12, kMaxRequestLifetimeMs);
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(request), kT0, reply) == ErrorCode::None);
+    CHECK(server.on_message(encode(request), reply) == ErrorCode::None);
     CHECK(server.request_deadline_steady_ms() == kT0 + kMaxRequestLifetimeMs);
 
     // Anything beyond it never even parses, so a client cannot buy itself an
@@ -565,10 +580,11 @@ FACEAUTH_TEST(server_clamps_the_requested_lifetime_to_the_protocol_maximum) {
 FACEAUTH_TEST(result_ttl_never_exceeds_the_protocol_maximum) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(make_request(14, kMaxRequestLifetimeMs)), kT0, reply) ==
+    CHECK(server.on_message(encode(make_request(14, kMaxRequestLifetimeMs)), reply) ==
           ErrorCode::None);
 
     const DecodeResult decoded = decode_message(reply);
@@ -579,10 +595,11 @@ FACEAUTH_TEST(result_ttl_never_exceeds_the_protocol_maximum) {
 FACEAUTH_TEST(result_ttl_never_outlives_a_short_request_window) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(make_request(15, 1000u)), kT0, reply) == ErrorCode::None);
+    CHECK(server.on_message(encode(make_request(15, 1000u)), reply) == ErrorCode::None);
 
     const DecodeResult decoded = decode_message(reply);
     CHECK(decoded.ok());
@@ -592,7 +609,8 @@ FACEAUTH_TEST(result_ttl_never_outlives_a_short_request_window) {
 FACEAUTH_TEST(expired_result_cannot_be_consumed) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(16, 2000u);
     ClientSession client = make_client(request);
@@ -600,7 +618,7 @@ FACEAUTH_TEST(expired_result_cannot_be_consumed) {
     std::vector<std::uint8_t> to_server;
     CHECK(client.start(kT0, to_server) == ErrorCode::None);
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(client.on_message(to_client, kT0) == ErrorCode::None);
 
     Outcome outcome = Outcome::Allow;
@@ -612,7 +630,8 @@ FACEAUTH_TEST(expired_result_cannot_be_consumed) {
 FACEAUTH_TEST(result_arriving_after_the_deadline_is_rejected) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(17, 2000u);
     ClientSession client = make_client(request);
@@ -620,7 +639,7 @@ FACEAUTH_TEST(result_arriving_after_the_deadline_is_rejected) {
     std::vector<std::uint8_t> to_server;
     CHECK(client.start(kT0, to_server) == ErrorCode::None);
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
 
     CHECK(client.on_message(to_client, kT0 + 9999) == ErrorCode::RequestExpired);
     CHECK(client.state() == ClientState::Failed);
@@ -643,9 +662,10 @@ FACEAUTH_TEST(client_timeout_denies) {
 FACEAUTH_TEST(server_timeout_while_idle_is_an_invalid_transition) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_timeout(kT0, reply) == ErrorCode::InvalidStateTransition);
+    CHECK(server.on_timeout(reply) == ErrorCode::InvalidStateTransition);
 }
 
 FACEAUTH_TEST(client_can_abandon_locally_without_sending_anything) {
@@ -673,7 +693,8 @@ FACEAUTH_TEST(abandoning_a_client_leaves_the_server_untouched) {
     // Phase 3 requirement.
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(20);
     ClientSession client = make_client(request);
@@ -681,7 +702,7 @@ FACEAUTH_TEST(abandoning_a_client_leaves_the_server_untouched) {
     CHECK(client.start(kT0, to_server) == ErrorCode::None);
 
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(backend.calls() == 1u);
 
     CHECK(client.abandon() == ErrorCode::Abandoned);
@@ -716,13 +737,14 @@ FACEAUTH_TEST(server_invalid_state_transition) {
     ScriptedVerificationBackend backend(
         {VerificationDecision{Outcome::Allow, 0}, VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(make_request(23)), kT0, reply) == ErrorCode::None);
+    CHECK(server.on_message(encode(make_request(23)), reply) == ErrorCode::None);
     CHECK(server.state() == ServerState::Responded);
 
-    CHECK(server.on_message(encode(make_request(24)), kT0, reply) ==
+    CHECK(server.on_message(encode(make_request(24)), reply) ==
           ErrorCode::InvalidStateTransition);
     CHECK(server.state() == ServerState::Failed);
     CHECK(backend.calls() == 1u);
@@ -731,7 +753,8 @@ FACEAUTH_TEST(server_invalid_state_transition) {
 FACEAUTH_TEST(server_rejects_a_result_message_from_the_client) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     VerifyResult forged{};
     forged.request_id = make_id(25);
@@ -741,7 +764,7 @@ FACEAUTH_TEST(server_rejects_a_result_message_from_the_client) {
     forged.result_ttl_ms = 1000;
 
     std::vector<std::uint8_t> reply;
-    CHECK(server.on_message(encode(forged), kT0, reply) == ErrorCode::InvalidStateTransition);
+    CHECK(server.on_message(encode(forged), reply) == ErrorCode::InvalidStateTransition);
     CHECK(server.state() == ServerState::Failed);
 }
 
@@ -803,7 +826,8 @@ FACEAUTH_TEST(result_with_wrong_nonce_is_rejected) {
 FACEAUTH_TEST(successful_result_cannot_be_reused) {
     ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
     ReplayCache cache;
-    ServerSession server(backend, cache);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock);
 
     const VerifyRequest request = make_request(29);
     ClientSession client = make_client(request);
@@ -811,7 +835,7 @@ FACEAUTH_TEST(successful_result_cannot_be_reused) {
     std::vector<std::uint8_t> to_server;
     CHECK(client.start(kT0, to_server) == ErrorCode::None);
     std::vector<std::uint8_t> to_client;
-    CHECK(server.on_message(to_server, kT0, to_client) == ErrorCode::None);
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::None);
     CHECK(client.on_message(to_client, kT0) == ErrorCode::None);
 
     Outcome first = Outcome::Deny;
@@ -885,16 +909,19 @@ FACEAUTH_TEST(service_restart_voids_an_in_flight_request) {
 
     const VerifyRequest request = make_request(32);
 
-    ServerSession before_restart(backend, cache);
+    ManualMonotonicClock before_restart_clock(kT0);
+    ServerSession before_restart(backend, cache, before_restart_clock);
     CHECK(before_restart.on_peer_disconnect() == ErrorCode::PeerDisconnected);
     CHECK(before_restart.state() == ServerState::Failed);
 
-    ServerSession after_restart(backend, cache);
+    ManualMonotonicClock after_restart_clock(kT0);
+    ServerSession after_restart(backend, cache, after_restart_clock);
     std::vector<std::uint8_t> reply;
-    CHECK(after_restart.on_message(encode(request), kT0, reply) == ErrorCode::None);
+    CHECK(after_restart.on_message(encode(request), reply) == ErrorCode::None);
 
-    ServerSession third(backend, cache);
-    CHECK(third.on_message(encode(request), kT0, reply) == ErrorCode::DuplicateRequestId);
+    ManualMonotonicClock third_clock(kT0);
+    ServerSession third(backend, cache, third_clock);
+    CHECK(third.on_message(encode(request), reply) == ErrorCode::DuplicateRequestId);
 }
 
 FACEAUTH_TEST(concurrency_gate_admits_only_the_configured_number_simultaneously) {
@@ -954,17 +981,19 @@ FACEAUTH_TEST(server_sessions_sharing_a_gate_cannot_verify_concurrently) {
     ErrorCode first_error = ErrorCode::InternalError;
 
     std::thread first([&]() {
-        ServerSession session(backend, cache, &gate);
-        first_error = session.on_message(encode(make_request(60)), kT0, first_reply);
+        ManualMonotonicClock session_clock(kT0);
+        ServerSession session(backend, cache, session_clock, &gate);
+        first_error = session.on_message(encode(make_request(60)), first_reply);
     });
 
     // Wait until the first verification is genuinely in flight.
     backend.wait_until_entered(1);
     CHECK(gate.in_flight() == 1u);
 
-    ServerSession second(backend, cache, &gate);
+    ManualMonotonicClock second_clock(kT0);
+    ServerSession second(backend, cache, second_clock, &gate);
     std::vector<std::uint8_t> second_reply;
-    const ErrorCode second_error = second.on_message(encode(make_request(61)), kT0, second_reply);
+    const ErrorCode second_error = second.on_message(encode(make_request(61)), second_reply);
 
     CHECK(second_error == ErrorCode::Busy);
     CHECK(second.state() == ServerState::Failed);
@@ -989,9 +1018,10 @@ FACEAUTH_TEST(distinct_requests_do_not_collide_in_a_shared_replay_cache) {
     ReplayCache cache;
 
     for (std::uint8_t seed = 33; seed < 36; ++seed) {
-        ServerSession server(backend, cache);
+        ManualMonotonicClock server_clock(kT0);
+        ServerSession server(backend, cache, server_clock);
         std::vector<std::uint8_t> reply;
-        CHECK(server.on_message(encode(make_request(seed)), kT0, reply) == ErrorCode::None);
+        CHECK(server.on_message(encode(make_request(seed)), reply) == ErrorCode::None);
     }
     CHECK(cache.size() == 3u);
 }
@@ -1093,4 +1123,321 @@ FACEAUTH_TEST(identifiers_are_only_ever_logged_as_short_prefixes) {
 FACEAUTH_TEST(protocol_test_results_are_labelled_as_such) {
     const std::string label(kProtocolTestResultLabel);
     CHECK(label.find("NOT A WINDOWS AUTHENTICATION DECISION") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Server deadline is enforced AFTER the backend returns
+// ---------------------------------------------------------------------------
+
+FACEAUTH_TEST(allow_completing_after_the_server_deadline_is_rejected) {
+    // The heart of the fix. The deadline used to be checked only on arrival, so
+    // a backend that overran its window still produced an Allow. It is now
+    // re-checked against a FRESH clock reading after verify() returns.
+    ManualMonotonicClock server_clock(kT0);
+    // Window is 1000 ms; the backend burns 1500 ms.
+    SlowVerificationBackend backend(server_clock, 1500u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    std::vector<std::uint8_t> reply;
+    const ErrorCode error = server.on_message(encode(make_request(70, 1000u)), reply);
+
+    CHECK(error == ErrorCode::RequestExpired);
+    CHECK(server.state() == ServerState::Failed);
+    CHECK(backend.calls() == 1u);
+
+    // And the reply must be a ProtocolError - never a late VerifyResult that a
+    // client could mistake for a live decision.
+    const DecodeResult decoded = decode_message(reply);
+    CHECK(decoded.ok());
+    CHECK(decoded.message.type == MessageType::ProtocolError);
+    CHECK(decoded.message.error.error_code == ErrorCode::RequestExpired);
+}
+
+FACEAUTH_TEST(no_late_allow_is_ever_emitted_to_the_client) {
+    // End-to-end: even with an Allow-scripted backend, a client driven by the
+    // overrun exchange must finish denied.
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 1500u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    const VerifyRequest request = make_request(71, 1000u);
+    ClientSession client = make_client(request);
+    std::vector<std::uint8_t> to_server;
+    CHECK(client.start(kT0, to_server) == ErrorCode::None);
+
+    std::vector<std::uint8_t> to_client;
+    CHECK(server.on_message(to_server, to_client) == ErrorCode::RequestExpired);
+
+    // The client sees a ProtocolError, not a result, and can never consume.
+    CHECK(client.on_message(to_client, kT0) == ErrorCode::RequestExpired);
+    CHECK(client.state() == ClientState::Failed);
+
+    Outcome outcome = Outcome::Allow;
+    CHECK(client.consume(kT0, outcome) == ErrorCode::InvalidStateTransition);
+    CHECK(outcome == Outcome::Deny);
+}
+
+FACEAUTH_TEST(completing_exactly_at_the_server_deadline_is_rejected) {
+    // Half-open: now >= deadline is expired, so landing exactly on it fails.
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 1000u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    std::vector<std::uint8_t> reply;
+    CHECK(server.on_message(encode(make_request(72, 1000u)), reply) == ErrorCode::RequestExpired);
+    CHECK(server.state() == ServerState::Failed);
+}
+
+FACEAUTH_TEST(completing_one_ms_before_the_server_deadline_still_succeeds) {
+    // The boundary from the other side, so the half-open rule is pinned rather
+    // than merely asserted in one direction.
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 999u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    std::vector<std::uint8_t> reply;
+    CHECK(server.on_message(encode(make_request(73, 1000u)), reply) == ErrorCode::None);
+    CHECK(server.state() == ServerState::Responded);
+
+    const DecodeResult decoded = decode_message(reply);
+    CHECK(decoded.ok());
+    CHECK(decoded.message.type == MessageType::VerifyResult);
+    // 1 ms of the window is left, so that is the TTL - not the original 1000.
+    CHECK(decoded.message.result.result_ttl_ms == 1u);
+}
+
+FACEAUTH_TEST(result_ttl_is_measured_from_completion_not_from_the_original_lifetime) {
+    // A 30 s window with 28 s consumed leaves 2 s. The old code would have sent
+    // the full kMaxResultValidityMs (5 s) - a window the server no longer had.
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 28000u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    std::vector<std::uint8_t> reply;
+    CHECK(server.on_message(encode(make_request(74, kMaxRequestLifetimeMs)), reply) ==
+          ErrorCode::None);
+
+    const DecodeResult decoded = decode_message(reply);
+    CHECK(decoded.ok());
+    CHECK(decoded.message.result.result_ttl_ms == 2000u);
+    CHECK(decoded.message.result.result_ttl_ms < kMaxResultValidityMs);
+}
+
+FACEAUTH_TEST(a_fast_backend_still_gets_the_capped_result_ttl) {
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 1u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ServerSession server(backend, cache, server_clock);
+
+    std::vector<std::uint8_t> reply;
+    CHECK(server.on_message(encode(make_request(75, kMaxRequestLifetimeMs)), reply) ==
+          ErrorCode::None);
+
+    const DecodeResult decoded = decode_message(reply);
+    CHECK(decoded.ok());
+    CHECK(decoded.message.result.result_ttl_ms == kMaxResultValidityMs);
+}
+
+// ---------------------------------------------------------------------------
+// Exact expiry boundaries (half-open: valid when now < deadline)
+// ---------------------------------------------------------------------------
+
+FACEAUTH_TEST(result_arriving_exactly_at_the_request_deadline_is_rejected) {
+    const VerifyRequest request = make_request(76, 1000u);
+    ClientSession client = make_client(request);
+    std::vector<std::uint8_t> out;
+    CHECK(client.start(kT0, out) == ErrorCode::None);
+    CHECK(client.request_deadline_steady_ms() == kT0 + 1000u);
+
+    VerifyResult result{};
+    result.request_id = request.request_id;
+    result.nonce = request.nonce;
+    result.account_binding = request.account_binding;
+    result.outcome = Outcome::Allow;
+    result.result_ttl_ms = 500u;
+
+    // Exactly on the deadline is already too late.
+    CHECK(client.on_message(encode(result), kT0 + 1000u) == ErrorCode::RequestExpired);
+    CHECK(client.state() == ClientState::Failed);
+}
+
+FACEAUTH_TEST(result_arriving_one_ms_before_the_request_deadline_is_accepted) {
+    const VerifyRequest request = make_request(77, 1000u);
+    ClientSession client = make_client(request);
+    std::vector<std::uint8_t> out;
+    CHECK(client.start(kT0, out) == ErrorCode::None);
+
+    VerifyResult result{};
+    result.request_id = request.request_id;
+    result.nonce = request.nonce;
+    result.account_binding = request.account_binding;
+    result.outcome = Outcome::Allow;
+    result.result_ttl_ms = 500u;
+
+    CHECK(client.on_message(encode(result), kT0 + 999u) == ErrorCode::None);
+    CHECK(client.state() == ClientState::ResultAvailable);
+}
+
+FACEAUTH_TEST(result_consumed_exactly_at_its_deadline_is_rejected) {
+    const VerifyRequest request = make_request(78, kMaxRequestLifetimeMs);
+    ClientSession client = make_client(request);
+    std::vector<std::uint8_t> out;
+    CHECK(client.start(kT0, out) == ErrorCode::None);
+
+    VerifyResult result{};
+    result.request_id = request.request_id;
+    result.nonce = request.nonce;
+    result.account_binding = request.account_binding;
+    result.outcome = Outcome::Allow;
+    result.result_ttl_ms = 400u;
+
+    CHECK(client.on_message(encode(result), kT0) == ErrorCode::None);
+    CHECK(client.result_deadline_steady_ms() == kT0 + 400u);
+
+    // One millisecond earlier is fine...
+    ClientSession twin = make_client(make_request(79, kMaxRequestLifetimeMs));
+    std::vector<std::uint8_t> twin_out;
+    CHECK(twin.start(kT0, twin_out) == ErrorCode::None);
+    VerifyResult twin_result = result;
+    twin_result.request_id = twin.request().request_id;
+    twin_result.nonce = twin.request().nonce;
+    CHECK(twin.on_message(encode(twin_result), kT0) == ErrorCode::None);
+    Outcome early = Outcome::Deny;
+    CHECK(twin.consume(kT0 + 399u, early) == ErrorCode::None);
+    CHECK(early == Outcome::Allow);
+
+    // ...but exactly on the deadline is not.
+    Outcome outcome = Outcome::Allow;
+    CHECK(client.consume(kT0 + 400u, outcome) == ErrorCode::RequestExpired);
+    CHECK(outcome == Outcome::Deny);
+    CHECK(client.state() == ClientState::Failed);
+}
+
+FACEAUTH_TEST(zero_ttl_result_can_never_be_consumed) {
+    // A zero-length window is unusable by construction under the half-open
+    // rule: result_deadline == now, and now >= now is expired.
+    const VerifyRequest request = make_request(80, kMaxRequestLifetimeMs);
+    ClientSession client = make_client(request);
+    std::vector<std::uint8_t> out;
+    CHECK(client.start(kT0, out) == ErrorCode::None);
+
+    VerifyResult result{};
+    result.request_id = request.request_id;
+    result.nonce = request.nonce;
+    result.account_binding = request.account_binding;
+    result.outcome = Outcome::Allow;
+    result.result_ttl_ms = 0u;
+
+    CHECK(client.on_message(encode(result), kT0) == ErrorCode::None);
+    CHECK(client.result_deadline_steady_ms() == kT0);
+
+    Outcome outcome = Outcome::Allow;
+    CHECK(client.consume(kT0, outcome) == ErrorCode::RequestExpired);
+    CHECK(outcome == Outcome::Deny);
+}
+
+FACEAUTH_TEST(replay_cache_expiry_agrees_with_session_expiry_at_the_boundary) {
+    // The cache and the sessions must stop considering the same instant live at
+    // the same moment. A mismatch would leave a one-millisecond seam in which a
+    // request was expired but its replay protection had not yet lapsed, or the
+    // reverse - which is the more dangerous direction.
+    ReplayCache cache(8);
+    const std::uint64_t expires_at = kT0 + 1000u;
+
+    CHECK(cache.observe(make_id(90), make_nonce_value(90), expires_at, kT0) == ErrorCode::None);
+
+    // One millisecond before: still live, so a duplicate is still rejected.
+    CHECK(cache.observe(make_id(90), make_nonce_value(91), expires_at, expires_at - 1u) ==
+          ErrorCode::DuplicateRequestId);
+
+    // Exactly at the deadline: gone, matching `now >= deadline` everywhere else.
+    CHECK(cache.observe(make_id(90), make_nonce_value(92), kT0 + 2000u, expires_at) ==
+          ErrorCode::None);
+}
+
+// ---------------------------------------------------------------------------
+// Backend exceptions
+// ---------------------------------------------------------------------------
+
+FACEAUTH_TEST(throwing_backend_fails_closed_and_releases_the_gate) {
+    ThrowingVerificationBackend backend;
+    ReplayCache cache;
+    ConcurrencyGate gate(1);
+    ManualMonotonicClock server_clock(kT0);
+    ServerSession server(backend, cache, server_clock, &gate);
+
+    std::vector<std::uint8_t> reply;
+    const ErrorCode error = server.on_message(encode(make_request(81)), reply);
+
+    // Fail closed with InternalError...
+    CHECK(error == ErrorCode::InternalError);
+    CHECK(server.state() == ServerState::Failed);
+    CHECK(backend.calls() == 1u);
+
+    // ...a valid ProtocolError reply, never an Allow...
+    const DecodeResult decoded = decode_message(reply);
+    CHECK(decoded.ok());
+    CHECK(decoded.message.type == MessageType::ProtocolError);
+    CHECK(decoded.message.error.error_code == ErrorCode::InternalError);
+
+    // ...and the gate is released as the exception unwinds. Without RAII this
+    // would stay at 1 forever and wedge admission control for the machine.
+    CHECK(gate.in_flight() == 0u);
+
+    // Proof it is genuinely reusable afterwards.
+    CHECK(gate.acquire() == ErrorCode::None);
+    gate.release();
+}
+
+FACEAUTH_TEST(a_throwing_backend_does_not_block_a_later_verification) {
+    ReplayCache cache;
+    ConcurrencyGate gate(1);
+
+    {
+        ThrowingVerificationBackend throwing;
+        ManualMonotonicClock first_clock(kT0);
+        ServerSession first(throwing, cache, first_clock, &gate);
+        std::vector<std::uint8_t> reply;
+        CHECK(first.on_message(encode(make_request(82)), reply) == ErrorCode::InternalError);
+    }
+
+    ScriptedVerificationBackend healthy({VerificationDecision{Outcome::Allow, 0}});
+    ManualMonotonicClock second_clock(kT0);
+    ServerSession second(healthy, cache, second_clock, &gate);
+    std::vector<std::uint8_t> reply;
+    CHECK(second.on_message(encode(make_request(83)), reply) == ErrorCode::None);
+    CHECK(second.state() == ServerState::Responded);
+    CHECK(gate.in_flight() == 0u);
+}
+
+FACEAUTH_TEST(a_synchronous_backend_holds_its_worker_until_it_returns) {
+    // Stated as a test so the limitation cannot quietly drift out of the docs.
+    //
+    // Protocol version 1 calls the backend synchronously. The post-verification
+    // deadline check bounds the DECISION - a late Allow is refused - but it
+    // cannot bound the CALL. While the backend runs, this thread and the
+    // concurrency gate are held, and nothing can preempt it. Making the call
+    // itself interruptible is Phase 3 work (entry criterion B16).
+    ManualMonotonicClock server_clock(kT0);
+    SlowVerificationBackend backend(server_clock, 5000u, VerificationDecision{Outcome::Allow, 0});
+    ReplayCache cache;
+    ConcurrencyGate gate(1);
+    ServerSession server(backend, cache, server_clock, &gate);
+
+    std::vector<std::uint8_t> reply;
+    // The window is 30 s, so 5 s of backend time is survivable and the result
+    // is honoured - the point is that on_message did not return until the
+    // backend did.
+    CHECK(server.on_message(encode(make_request(84, kMaxRequestLifetimeMs)), reply) ==
+          ErrorCode::None);
+    CHECK(backend.calls() == 1u);
+    // The clock only advanced because the backend advanced it; nothing else
+    // could run in the meantime.
+    CHECK(server_clock.steady_now_ms() == kT0 + 5000u);
+    CHECK(gate.in_flight() == 0u);
 }

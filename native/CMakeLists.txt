@@ -134,7 +134,7 @@ set(FACEAUTH_TEST_NAMES
     replay_cache_evicts_on_the_servers_monotonic_clock
     full_replay_cache_fails_closed
     replay_cache_is_safe_under_concurrent_observers
-    expired_request_is_rejected_by_server
+    zero_lifetime_request_is_rejected_before_the_backend_runs
     server_clamps_the_requested_lifetime_to_the_protocol_maximum
     result_ttl_never_exceeds_the_protocol_maximum
     result_ttl_never_outlives_a_short_request_window
@@ -166,6 +166,20 @@ set(FACEAUTH_TEST_NAMES
     diagnostics_reject_unsafe_values
     identifiers_are_only_ever_logged_as_short_prefixes
     protocol_test_results_are_labelled_as_such
+    allow_completing_after_the_server_deadline_is_rejected
+    no_late_allow_is_ever_emitted_to_the_client
+    completing_exactly_at_the_server_deadline_is_rejected
+    completing_one_ms_before_the_server_deadline_still_succeeds
+    result_ttl_is_measured_from_completion_not_from_the_original_lifetime
+    a_fast_backend_still_gets_the_capped_result_ttl
+    result_arriving_exactly_at_the_request_deadline_is_rejected
+    result_arriving_one_ms_before_the_request_deadline_is_accepted
+    result_consumed_exactly_at_its_deadline_is_rejected
+    zero_ttl_result_can_never_be_consumed
+    replay_cache_expiry_agrees_with_session_expiry_at_the_boundary
+    throwing_backend_fails_closed_and_releases_the_gate
+    a_throwing_backend_does_not_block_a_later_verification
+    a_synchronous_backend_holds_its_worker_until_it_returns
 )
 
 # Windows-only. These drive real named pipes against deliberately unresponsive

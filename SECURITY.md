@@ -116,26 +116,49 @@ is a secret:
 - **No Windows sign-in integration exists.** The Phase 2 review concluded that
   the local-account use case is a **NO-GO** under this project's constraints.
   See `docs/PHASE2_SECURITY_REVIEW.md`.
+- **There is no proven safe way to authorize a pre-logon enrollment.** This is
+  an open blocker (B15), not a solved problem. An earlier design claimed
+  `CredUIPromptForWindowsCredentials` could re-authenticate a user without
+  exposing credential material; that claim was wrong and has been withdrawn.
 
 ## What this project will never do
 
-These are permanent commitments, not current limitations:
+These are permanent commitments, not current limitations, and they hold in
+every phase:
 
 - Never request, read, derive, store, serialize, transmit, or automatically
-  type a Windows account password.
+  type a Windows account password. **This includes calling any API that returns
+  a credential blob to this process** - see
+  `docs/adr/0004-enrollment-provisioning-and-recovery.md` E5 for a specific
+  claim that was withdrawn on exactly this ground.
 - Never register itself as the sole sign-in option, populate a credential
-  provider `Exclude` list, or disable or hide the password provider or Windows
-  Hello.
+  provider `Exclude` list, filter providers, or disable or hide the password
+  provider or Windows Hello.
 - Never modify LogonUI, Winlogon, LSA, Credential Guard, Windows Hello,
-  credential provider filters, Windows authentication policies, or account
-  settings.
+  Windows authentication policies, or account settings.
+- Never bypass Windows' own authorization decision.
 - Never use undocumented NGC or Windows Hello internals.
 - Never report a successful Windows authentication on the basis of a face match
   alone.
 - Never send biometric data off the machine.
+- Never weaken domain-controller certificate-binding enforcement (for example
+  via `StrongCertificateBindingEnforcement`) to make a weak certificate mapping
+  work.
 
 A pull request that does any of these will be rejected regardless of how well
 it works.
+
+### What is *gated*, as distinct from prohibited
+
+Implementing a Credential Provider, installing a Windows service, serializing a
+credential, and touching the TPM, certificate store, or camera from native code
+are **not** on the list above. They are the substance of a future Phase 3, and
+they are blocked **today** by the Phase 2 gate rather than banned forever.
+
+They become permissible only when every entry criterion in
+`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B passes **and** the repository owner
+records explicit written approval. Until then a PR containing them will be
+closed. See CONTRIBUTING.md, "Proposing gated Phase 3 work".
 
 ## Supported versions
 

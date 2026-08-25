@@ -17,6 +17,8 @@ SECURITY.md instead.
 - [ ] Phase 1 (Python pipeline under `src/faceauth/`)
 - [ ] Phase 2 (documentation, ADRs, or the inert `native/` scaffold)
 - [ ] Repository infrastructure (CI, docs, tooling)
+- [ ] **Phase 3 (gated)** - complete the Phase 3 section below instead of the
+      Phase 2 gate checklist
 - [ ] Other (explain below)
 
 ## Security impact
@@ -60,22 +62,23 @@ If `native/` changed:
       MSVC/CMake toolchain and am relying on CI (say which)
 - [ ] I did not weaken, skip, delete, or rewrite a test to make the suite pass
 
-## Boundary checklist
+## Permanent boundary checklist
 
-Confirm every line. These are the project's non-negotiable boundaries
-(CONTRIBUTING.md, SECURITY.md).
+Confirm every line. These apply to **every** PR in **every** phase and are never
+waived (CONTRIBUTING.md "Permanently prohibited", SECURITY.md).
 
 - [ ] No Windows password is requested, read, derived, stored, serialized,
-      transmitted, or auto-typed
-- [ ] No Credential Provider is registered; no CLSID or credential-provider
-      registry entry is created or modified
-- [ ] No Windows service is installed, started, stopped, or configured
+      transmitted, or auto-typed - including via any API that returns a
+      credential blob to this process
+- [ ] No `Exclude` list, no provider filtering, no hiding of the password
+      provider or Windows Hello, and this is never the sole sign-in option
 - [ ] No change to LogonUI, Winlogon, LSA, Credential Guard, Windows Hello,
-      provider filters, authentication policies, or account settings
-- [ ] No credential serialization; no `KERB_*` structure is constructed
-- [ ] No TPM, NCrypt, certificate, or camera access is added to `native/`
+      authentication policies, or account settings
+- [ ] Windows' own authorization decision is not bypassed, and no path reports a
+      successful Windows authentication based on a face match alone
 - [ ] No undocumented NGC or Windows Hello internals are used
-- [ ] No path reports a successful Windows authentication based on a face match
+- [ ] No biometric data leaves the machine
+- [ ] No weakening of domain-controller certificate-binding enforcement
 - [ ] No biometric data, template, raw image, model weight, log, key,
       certificate, secret, registry export, or build output is committed
 - [ ] Any claim about Windows behaviour cites current official Microsoft
@@ -84,6 +87,32 @@ Confirm every line. These are the project's non-negotiable boundaries
 - [ ] Existing limitation warnings (RGB liveness, video replay, no Windows
       sign-in integration) are intact, or their removal is justified by
       evidence included here
+
+## Phase 2 gate checklist
+
+Complete this **unless** you ticked "Phase 3 (gated)" above. These are current
+gates, not permanent prohibitions - see CONTRIBUTING.md.
+
+- [ ] No Credential Provider is registered; no CLSID, provider registry entry,
+      `DllRegisterServer`, or `.reg` file
+- [ ] No Windows service is installed, started, stopped, or configured
+- [ ] No credential serialization; no `KERB_*` structure is constructed
+- [ ] No TPM, NCrypt, certificate, or camera access is added to `native/`
+
+## Phase 3 (gated) - only if you ticked it above
+
+Phase 3 work is **not authorized by default**. Link the evidence; a PR without
+these links will be closed.
+
+- [ ] Owner's recorded product-scope decision accepting the AD-domain-only
+      scope (B7): <!-- link -->
+- [ ] Evidence for every entry criterion B1-B15 in
+      `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B: <!-- link -->
+- [ ] VM snapshot/rollback plan (B5) and rehearsed recovery runbook (B6):
+      <!-- link -->
+- [ ] Independent Windows-authentication security review (B11): <!-- link -->
+- [ ] This PR does **not** also relax the `repo-hygiene` CI guard. Relaxing it
+      is a separate, standalone Phase 3-enablement PR.
 
 ## Sources
 

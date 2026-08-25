@@ -121,17 +121,26 @@ particular:
 
 ## Prohibited changes
 
-A pull request doing any of the following will be closed:
+Two different things are listed below, and the difference matters. Conflating
+them would make the project's own documented Phase 3 roadmap impossible to ever
+deliver, which would be its own kind of dishonesty.
 
-- Handling a Windows password in any form, at any layer.
-- Registering a Credential Provider, creating or modifying a CLSID or
-  credential-provider registry entry, or adding a `.reg` file.
-- Installing, starting, stopping, or configuring a Windows service.
-- Modifying LogonUI, Winlogon, LSA, Credential Guard, Windows Hello, credential
-  provider filters, Windows authentication policies, or account settings.
-- Populating an `Exclude` list, hiding the password provider or Windows Hello,
-  or making this the sole sign-in option.
+### Permanently prohibited - no phase, no approval, ever
+
+- Handling a Windows password in any form, at any layer: requesting, reading,
+  deriving, storing, serializing, transmitting, or auto-typing it. This
+  includes APIs that hand a credential blob back to this process (see
+  `docs/adr/0004-enrollment-provisioning-and-recovery.md` E5).
+- Populating an `Exclude` list, filtering or hiding the password provider or
+  Windows Hello, or making this the sole sign-in option.
+- Modifying or patching LogonUI, Winlogon, LSA, Credential Guard, Windows
+  Hello, Windows authentication policies, or account settings.
+- Bypassing Windows' own authorization decision, or reporting a successful
+  Windows authentication on the basis of a face match alone.
 - Using undocumented NGC or Windows Hello internals.
+- Sending biometric data off the machine.
+- Weakening domain-controller certificate-binding enforcement (for example via
+  `StrongCertificateBindingEnforcement`) to make a weak mapping work.
 - Claiming an API or integration path is supported without a citation to
   current official Microsoft documentation.
 - Committing biometric data, templates, raw images, model weights, runtime
@@ -140,8 +149,46 @@ A pull request doing any of the following will be closed:
 - Describing this project as equivalent to Windows Hello, or removing an
   existing limitation warning without evidence that the limitation is gone.
 
-The `repo-hygiene` CI job enforces several of these mechanically. It is a
+### Currently gated - Phase 2 gate, not a permanent ban
+
+These are **blocked today** and will stay blocked until the Phase 3 entry
+criteria in `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B **all** pass and the
+repository owner records explicit written approval:
+
+- Implementing `ICredentialProvider` / `ICredentialProviderCredential2`.
+- COM registration: a CLSID, a credential-provider registry entry, a
+  `DllRegisterServer`, or a `.reg` file.
+- Installing, starting, stopping, or configuring a Windows service.
+- Credential serialization - constructing a `KERB_*` structure.
+- TPM, NCrypt, CNG, or certificate-store access.
+- Camera access from native code.
+
+A PR that lands any of these **without** that approval will be closed. A PR
+that lands them **with** it is the whole point of Phase 3 (see
+["Proposing gated Phase 3 work"](#proposing-gated-phase-3-work) below).
+
+The `repo-hygiene` CI job enforces the current gate mechanically. It is a
 backstop, not the boundary.
+
+## Proposing gated Phase 3 work
+
+Phase 3 is not forbidden forever - it is **not authorized yet**. To propose it:
+
+1. Confirm every entry criterion in `docs/PHASE2_ACCEPTANCE_CRITERIA.md`
+   Part B (B1-B15) has evidence, and link that evidence.
+2. Link the owner's recorded product-scope decision accepting the
+   AD-domain-only scope (B7).
+3. Link the VM snapshot/rollback plan (B5) and the rehearsed recovery runbook
+   (B6).
+4. Link the independent Windows-authentication security review (B11).
+5. Use the **Phase 3 (gated)** option in the pull-request template and complete
+   its extra checklist instead of the Phase 2 boundary checklist.
+
+**Changing the `repo-hygiene` guard is itself gated.** It may only be relaxed
+by a separate, standalone "Phase 3 enablement" PR that changes nothing else,
+links the approval above, and states exactly which markers are being unblocked
+and why. Do not weaken it as a side effect of a feature PR, and never delete
+the job.
 
 ## Privacy rules
 
@@ -162,7 +209,7 @@ backstop, not the boundary.
 ## Pull request expectations
 
 - **One concern per PR.** A refactor mixed with a behaviour change is hard to
-  review and harder to revert.
+  review and harder to revert. Phase 3 enablement is always its own PR.
 - **Branch from `main`.** Do not commit to `main` directly.
 - **Explain the security impact**, even if it is "none". The PR template asks;
   answer it honestly.

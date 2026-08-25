@@ -14,19 +14,54 @@ body:
   - type: checkboxes
     id: boundaries
     attributes:
-      label: Boundary check
+      label: Permanent boundary check
       description: >-
-        These are non-negotiable. A proposal that requires any of them cannot
-        be accepted, however useful it would be.
+        These are non-negotiable in every phase. A proposal that requires any of
+        them cannot be accepted, however useful it would be.
       options:
-        - label: This does not require handling a Windows password in any form.
+        - label: This does not require handling a Windows password in any form, including via an API that returns a credential blob to this project.
           required: true
-        - label: This does not require registering a Credential Provider, installing a service, or changing Windows authentication, LSA, LogonUI, Credential Guard, Windows Hello, or account settings.
+        - label: This does not require filtering or hiding the password provider or Windows Hello, or making this the sole sign-in option.
+          required: true
+        - label: This does not require modifying LogonUI, Winlogon, LSA, Credential Guard, Windows Hello, authentication policies, or account settings.
+          required: true
+        - label: This does not bypass Windows' own authorization decision or report a Windows sign-in from a face match alone.
           required: true
         - label: This does not require undocumented NGC or Windows Hello internals.
           required: true
-        - label: This does not require committing biometric data, model weights, keys, certificates, or build output.
+        - label: This does not send biometric data off the machine, and does not require committing biometric data, model weights, keys, certificates, or build output.
           required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this belong to?
+      description: >-
+        Credential Provider, service, credential serialization, TPM,
+        certificate, and camera work are GATED behind the Phase 3 entry
+        criteria - not permanently banned. Classify the proposal honestly
+        rather than mis-labelling it to get past a checkbox.
+      options:
+        - Phase 1 (the standalone Python pipeline)
+        - Phase 2 (docs, ADRs, or the inert native scaffold)
+        - Repository infrastructure (CI, tooling, docs)
+        - Phase 3 (gated - Credential Provider, service, or credential handling)
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: phase3
+    attributes:
+      label: If this is Phase 3 (gated)
+      description: >-
+        Leave unticked if it is not Phase 3. Phase 3 work cannot start until
+        every entry criterion in docs/PHASE2_ACCEPTANCE_CRITERIA.md Part B
+        (B1-B15) passes AND the owner records explicit approval. A proposal is
+        welcome before then - implementation is not.
+      options:
+        - label: I understand this cannot be implemented until all Phase 3 entry criteria pass and the owner records explicit approval.
+          required: false
 
   - type: textarea
     id: problem

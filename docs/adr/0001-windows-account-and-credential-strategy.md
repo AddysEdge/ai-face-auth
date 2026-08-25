@@ -124,8 +124,9 @@ KDC*. Every path through it terminates at a domain controller holding an AD DS
 account object. No documented variant authenticates a **local** SAM account
 with a certificate. The same page's requirements list (KDC certificate, HTTP
 CRL distribution point on both the KDC root and the sign-in certificate,
-NTAuth store trust, UPN or `altSecurityIdentities` mapping) describes an
-enterprise PKI deployment, not a single-machine feature.
+NTAuth store trust, certificate-to-account mapping) describes an enterprise PKI
+deployment, not a single-machine feature. Note that this page's UPN-mapping
+guidance is **superseded for enforcement purposes** by KB5014754 - see E8.
 
 ### E4 - Windows Hello face is a Microsoft component, not a third-party extension point
 
@@ -195,6 +196,45 @@ that are enterprise-joined and HVCI-capable.
 
 *Source:* `learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection`
 
+### E8 - Certificate-to-account mapping must be STRONG, and UPN mapping is not
+
+KB5014754 changed what domain controllers accept. It divides
+`altSecurityIdentities` mappings into strong and weak:
+
+| Mapping | Example | Strength |
+|---|---|---|
+| `X509IssuerSerialNumber` | `X509:<I>IssuerName<SR>SerialNumber` | **Strong** |
+| `X509SKI` | `X509:<SKI>123456789abcdef` | **Strong** |
+| `X509SHA1PublicKey` | `X509:<SHA1-PUKEY>123456789abcdef` | **Strong** |
+| `X509IssuerSubject` | `X509:<I>IssuerName<S>SubjectName` | **Weak** |
+| `X509SubjectOnly` | `X509:<S>SubjectName` | **Weak** |
+| `X509RFC822` | `X509:<RFC822>user@contoso.com` | **Weak** |
+
+Separately, a certificate may carry the SID security extension, OID
+**`1.3.6.1.4.1.311.25.2`**, which lets the KDC confirm that "the certificate
+SID matches the account SID". That is the preferred strong binding.
+
+The timeline matters:
+
+- **11 February 2025** - domain controllers moved to **Full Enforcement**.
+- **9 September 2025** - the `StrongCertificateBindingEnforcement` registry
+  key became **unsupported**; rollback to Compatibility mode is no longer
+  available.
+
+Under Full Enforcement, if "a certificate cannot be strongly mapped,
+authentication will be denied" (Event ID 39).
+
+*Source:* `support.microsoft.com/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16`
+
+**Reading, and a correction.** An earlier revision of this ADR listed "UPN in
+`subjectAltName`, or via `altSecurityIdentities`" as sufficient. **That is
+wrong under current enforcement**: UPN/name-based mapping is exactly the weak
+class that Full Enforcement rejects, and the compatibility escape hatch no
+longer exists. A deployment must issue certificates carrying the SID extension,
+or configure an explicitly strong `altSecurityIdentities` value. Weakening
+domain-controller enforcement to make a name mapping work is **not** an
+option this project will propose.
+
 ## 4. Considered alternatives
 
 | # | Alternative | Verdict |
@@ -230,8 +270,12 @@ one fails, the AD path is a NO-GO for that deployment.
 3. Domain controllers hold a valid KDC / Domain Controller Authentication /
    Kerberos Authentication certificate.
 4. The issuing CA is present in the `NTAuth` store.
-5. Certificates map to accounts by UPN in `subjectAltName`, or via
-   `altSecurityIdentities`.
+5. Certificates carry a **strong** binding to the account: either the SID
+   security extension (OID `1.3.6.1.4.1.311.25.2`), or an explicitly strong
+   `altSecurityIdentities` value - `X509IssuerSerialNumber`, `X509SKI`, or
+   `X509SHA1PublicKey`. **A UPN or other name-based mapping is weak and is
+   rejected under Full Enforcement** (E8). Disabling or weakening
+   domain-controller enforcement to work around this is not permitted.
 6. CRL distribution points (and, where used, OCSP responders) are published,
    reachable **before** interactive logon, and valid - the documentation calls
    out HTTP CRL DPs on both the KDC root certificate and the sign-in
@@ -239,8 +283,11 @@ one fails, the AD path is a NO-GO for that deployment.
 7. A certificate enrolment, renewal, and revocation process exists (ADR-0004).
 8. The private key lives in a key container the smart-card logon path can
    consume, reachable from LogonUI at logon time (see Q1/Q2).
-9. A rollback-capable VM lab exists for every install/uninstall test.
-10. The built-in password provider stays enabled for every affected account
+9. Sign-in is verified against a domain controller in **Full Enforcement**
+   mode, with no `StrongCertificateBindingEnforcement` compatibility setting in
+   play - that key has been unsupported since 9 September 2025 (E8).
+10. A rollback-capable VM lab exists for every install/uninstall test.
+11. The built-in password provider stays enabled for every affected account
     (E2, R4).
 
 ### 5.3 Consequence for the original product goal - stated plainly
@@ -355,6 +402,10 @@ around the password provider sits directly adjacent to the password.
 - Requires pre-logon network reachability for the KDC and CRL/OCSP endpoints.
 - Requires a certificate lifecycle: enrolment, renewal, revocation, and
   machine-replacement handling (ADR-0004).
+- Requires certificates with a **strong** account binding (SID extension or a
+  strong `altSecurityIdentities` form). Existing UPN-mapped certificates are
+  not usable under Full Enforcement, so an established PKI may need template
+  and re-issuance work before this is possible at all (E8).
 - Does not work for local accounts, Microsoft accounts, or - as far as this
   review can support - Entra ID accounts.
 - Never becomes the sole sign-in method; the password provider stays enabled.
@@ -370,6 +421,7 @@ around the password provider sits directly adjacent to the password.
 | Q3 | Is there any supported Entra ID credential surface for a third-party provider? | Would move Entra ID out of DEFERRED. | 3 |
 | Q4 | What exactly must `GetSerialization` return for a smart-card-class credential authored by a third party, as opposed to the system smart card provider? | Implementation detail; requires the Microsoft sample plus VM testing. | 3 |
 | Q5 | Does releasing a stored PIN behind a biometric gate meet the deploying organisation's own authentication policy? | Organisational, not technical; must be asked before any pilot. | 3 |
+| Q6 | Can the deployment's existing PKI issue the SID security extension, and does its CA/template configuration support it without re-issuing every certificate? | Determines how much PKI work the AD path actually costs (E8). | 3 |
 
 ## 10. Status
 

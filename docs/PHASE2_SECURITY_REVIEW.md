@@ -29,9 +29,10 @@ repository.**
 > controller, an enterprise PKI, certificate enrolment, account mapping, and
 > reachable CRL/OCSP endpoints at sign-in time.
 >
-> Two hard blockers (camera access in Session 0 pre-logon; pre-logon latency
-> and reliability) remain unproven and must be cleared in a VM before Phase 3
-> may begin.
+> Three hard blockers remain unproven and must be cleared before Phase 3 may
+> begin: camera access in Session 0 pre-logon (B1), pre-logon latency and
+> reliability (B2), and a password-free way to authorize enrollment at all
+> (B15).
 
 | Account type | Result |
 |---|---|
@@ -98,9 +99,37 @@ There is no KDC and no AD DS account object for one. This is the finding that
 turns the local-account goal into a NO-GO.
 
 **Deployment cost, stated up front rather than buried:** a KDC certificate, an
-enterprise CA in the NTAuth store, smart-card-logon-EKU certificates, UPN or
-`altSecurityIdentities` mapping, and HTTP CRL distribution points that are
-published and reachable *before* interactive logon.
+enterprise CA in the NTAuth store, smart-card-logon-EKU certificates, a
+**strong** certificate-to-account binding (section 2.2a), and HTTP CRL
+distribution points that are published and reachable *before* interactive
+logon.
+
+### 2.2a Account mapping must be STRONG - a correction (Verified)
+
+An earlier revision of this review listed "UPN in `subjectAltName`, or via
+`altSecurityIdentities`" as sufficient. **That is wrong under current
+enforcement.** KB5014754 divides mappings into strong and weak:
+
+| Strong | Weak |
+|---|---|
+| SID security extension, OID `1.3.6.1.4.1.311.25.2` | UPN / name-based mapping |
+| `X509IssuerSerialNumber` | `X509IssuerSubject` |
+| `X509SKI` | `X509SubjectOnly` |
+| `X509SHA1PublicKey` | `X509RFC822` |
+
+Domain controllers entered **Full Enforcement on 11 February 2025**, and the
+`StrongCertificateBindingEnforcement` rollback key became **unsupported on
+9 September 2025**. Under Full Enforcement, if "a certificate cannot be strongly
+mapped, authentication will be denied" (Event ID 39).
+
+*Source:* `support.microsoft.com/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16`
+
+**Consequence:** a deployment must issue certificates carrying the SID extension
+or an explicitly strong `altSecurityIdentities` value. An existing PKI issuing
+UPN-mapped certificates needs template and re-issuance work first, which is a
+real added cost. **Weakening domain-controller enforcement to avoid that is not
+an option this project will propose**, and verifying against a Full Enforcement
+DC is now criterion B4a.
 
 ### 2.3 NGC / Windows Hello container gating is unproven - and the earlier claim is withdrawn
 
@@ -284,10 +313,28 @@ the per-service SID, with `FILE_FLAG_FIRST_PIPE_INSTANCE` against squatting and
 Endpoint identity, SDDL, service SID, client and server authentication, request
 IDs, cryptographically random nonces, replay rejection, request-to-result
 binding, user/account binding, session and desktop binding, deadlines, timeouts,
-cancellation, duplicate requests, malformed and oversized messages, length
-limits, invalid state transitions, client and server disconnect, service
-restart, concurrency, denial of service, confused deputy, TOCTOU, logging
-restrictions, and fail-closed behaviour.
+duplicate requests, malformed and oversized messages, length limits, invalid
+state transitions, client and server disconnect, service restart, concurrency,
+denial of service, confused deputy, TOCTOU, logging restrictions, and
+fail-closed behaviour.
+
+**Two scope corrections, made rather than glossed over:**
+
+- **In-flight cancellation is NOT implemented and is explicitly deferred.** A
+  version-1 server calls its verification backend synchronously, so it cannot
+  read a cancellation while verifying - a `CancelRequest` message could only
+  ever have been handled *between* requests, which is not cancellation. The
+  message type was removed, type 3 is permanently reserved in v1, and real
+  cancellation is a Phase 3 requirement needing an asynchronous server and a
+  protocol version bump (ADR-0003 section 5.8, criterion B16). What version 1
+  does provide is local client abandonment plus bounded deadlines on both
+  sides, which is what actually stops the logon screen hanging.
+- **No wall clock participates in any security decision.** An earlier draft
+  serialized Unix timestamps for deadlines and result expiry. System time can
+  jump backwards or forwards, which would silently extend a "short-lived"
+  result. The protocol now carries only bounded *relative* durations, and each
+  side derives its own deadline from its own monotonic clock; a result can only
+  shorten the client's window, never extend it (ADR-0003 section 5.1a).
 
 ## 5. Enrollment, provisioning, and recovery
 
@@ -297,14 +344,33 @@ Full detail in
 - **Who enrolls:** only the holder of the identity, interactively, on that
   machine. Administrators may remove an enrollment; they may not create one for
   someone else.
-- **Authorization:** a fresh Windows credential prompt, issued by the OS. This
-  project never sees the password.
+- **Authorization: UNRESOLVED - blocker B15.** An earlier revision of this
+  review claimed `CredUIPromptForWindowsCredentials` provided a fresh OS-issued
+  re-authentication without exposing the password. **That claim is withdrawn.**
+  Microsoft documents that the API returns the credential BLOB to the caller
+  ("For Kerberos, NTLM, or Negotiate credentials, call the
+  **CredUnPackAuthenticationBuffer** function to convert this BLOB to string
+  representations of the credentials"), makes the caller responsible for
+  scrubbing it ("clear it from memory by calling the **SecureZeroMemory**
+  function, and free it by calling the **CoTaskMemFree** function"), and does
+  not itself validate anything - `dwAuthError` exists to relay a *previous*
+  validator's failure. Using it would put this project in direct contact with a
+  Windows password, which is permanently prohibited. **No replacement is
+  proposed**, because guessing at another API would repeat the error. See
+  ADR-0004 section 5.1a.
 - **Association:** a random opaque handle crosses the wire; the handle-to-SID
   map stays in the ACL-protected store.
 - **Protection at rest:** machine-scope DPAPI + entropy + service-SID ACL, with
   the regression stated plainly (section 3.5). TPM sealing is the target.
-- **Provisioning:** through the domain's existing PKI only. This project never
-  becomes a CA and never issues a certificate.
+- **Provisioning:** through the domain's existing PKI only, and the certificate
+  must carry a **strong** account binding - the SID security extension (OID
+  `1.3.6.1.4.1.311.25.2`) or a strong `altSecurityIdentities` value
+  (`X509IssuerSerialNumber`, `X509SKI`, `X509SHA1PublicKey`). Per KB5014754,
+  UPN and other name-based mappings are **weak** and are denied under Full
+  Enforcement, which domain controllers entered on 11 February 2025; the
+  `StrongCertificateBindingEnforcement` rollback key became unsupported on
+  9 September 2025. This project never becomes a CA, never issues a
+  certificate, and never proposes weakening enforcement.
 - **Renewal:** the domain's autoenrollment. The tile hides itself before an
   expired certificate can fail at submission.
 - **Revocation:** two independent halves - removing the enrollment stops the
@@ -332,9 +398,12 @@ Justified because the review reached CONDITIONAL GO rather than NO-GO. See
 strict warnings-as-errors and no third-party runtime dependencies, containing
 the versioned IPC contract, a strict parser, both protocol state machines,
 bounded message handling, cryptographically random IDs and nonces, replay
-detection, deadline/cancellation handling, privacy-safe diagnostics, inert
-boundary interfaces, and a fake client/server pair that runs on the normal
-desktop over an in-process transport and over a user-owned loopback named pipe.
+detection, monotonic deadline and timeout handling, local client abandonment
+(there is no cancellation message - see above), privacy-safe diagnostics, a
+thread-safe concurrency gate a server session really holds across its
+verification, inert boundary interfaces, and a fake client/server pair that runs
+on the normal desktop over an in-process transport and over a user-owned
+loopback named pipe with genuinely bounded I/O.
 
 **What it is not:** it does not build or register a Credential Provider DLL, does
 not implement any COM interface, does not install or interact with a service,
@@ -379,6 +448,7 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 | **B3** | Unresolved: whether a TPM-backed CNG KSP key without a virtual smart card can be consumed by the `KERB_CERTIFICATE_LOGON` path, or whether a VSC is mandatory - and whether VSCs remain supported. | ADR-0001 Q1/Q2 |
 | **B4** | Missing: an AD domain + enterprise PKI lab (KDC certificate, NTAuth CA, enrolment, CRL/OCSP). Without it, nothing in ADR-0001 section 5.2 is testable. | ADR-0001 |
 | **B5** | Not yet done: a dedicated security review of the *implementation* by someone with prior credential-provider or LSA-adjacent experience, before any provider code is written. | all |
+| **B15** | **Unresolved: no password-free, OS-mediated enrollment-authorization mechanism has been proven.** The previously claimed one does not qualify. Without it, pre-logon enrollment cannot be authorized safely and Phase 3 cannot proceed. | ADR-0004 5.1a |
 
 ### Accepted risks
 
@@ -419,14 +489,16 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 **Phase 3 may not begin yet.**
 
 The review reached CONDITIONAL GO, which is enough to justify the documentation
-and the inert native scaffold delivered here - but B1 through B5 are open, and
-B1 in particular could still turn the whole architecture into a NO-GO. Writing
+and the inert native scaffold delivered here - but B1 through B5 and B15 are
+open, and B1 or B15 could each still turn the whole architecture into a NO-GO. Writing
 credential-provider code before B1 is settled would be building on an
 unverified assumption.
 
 **The recommended next step is not Phase 3. It is a VM-only feasibility spike**
-that answers B1 and B2 with measurements, plus a decision by the project owner
-on whether the AD-domain-only scope in ADR-0001 is a product they actually want.
+that answers B1 and B2 with measurements, a documentation search that either
+closes B15 or confirms there is no safe way to authorize enrollment, and a
+decision by the project owner on whether the AD-domain-only scope in ADR-0001 is
+a product they actually want.
 If the answer to that second question is no, the honest outcome is to keep
 Phase 1 as an application-level control and stop - which is a legitimate result,
 not a failure.

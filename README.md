@@ -16,7 +16,7 @@ Windows account it never can - see below.**
 |---|---|
 | **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 137 tests. |
 | **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
-| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** Two blockers are unproven. See [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). |
+| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** Three blockers are unproven (B1, B2, B15). See [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). |
 
 **No Credential Provider is registered. No Windows service is installed. No
 Windows password is handled anywhere in this repository.** Nothing here reads
@@ -51,11 +51,23 @@ documentation in
 So for a personal machine, this repository's application-level control **is**
 the answer, not a stepping stone to one.
 
-Two blockers remain open before any Phase 3 work could begin: whether a
-third-party Session 0 service can open a camera before interactive logon
-(**B1**), and whether pre-logon latency and reliability are acceptable
-(**B2**). If B1 cannot be cleared using documented APIs, the architecture is a
-NO-GO outright.
+Three blockers remain open before any Phase 3 work could begin:
+
+- **B1** - whether a third-party Session 0 service can open a camera before
+  interactive logon. If this cannot be cleared using documented APIs, the
+  architecture is a NO-GO outright.
+- **B2** - whether pre-logon latency and reliability are acceptable.
+- **B15** - whether *any* password-free, OS-mediated mechanism exists to
+  authorize a pre-logon enrollment. An earlier design claimed
+  `CredUIPromptForWindowsCredentials` did this; that was wrong - the API returns
+  the credential blob to the caller and does not validate it - so the claim was
+  withdrawn and no replacement is proposed. Without one, enrollment cannot be
+  authorized safely at all.
+
+Also required: certificates with a **strong** account binding. Per Microsoft's
+KB5014754, UPN and other name-based mappings are weak and are denied by domain
+controllers in Full Enforcement (since 11 February 2025), and the compatibility
+rollback key has been unsupported since 9 September 2025.
 
 ## What this project does
 
@@ -184,9 +196,12 @@ cmake --build native/build --config Release
 ctest --test-dir native/build -C Release --output-on-failure
 ```
 
-Warnings are errors (`/W4 /permissive- /WX`). See [`native/README.md`](native/README.md)
-for what the scaffold is, what it deliberately is not, and how its 43 protocol
-tests map to the required coverage.
+Warnings are errors (`/W4 /permissive- /WX`). The suite is **68 CTest entries
+on Windows**: 56 named protocol tests, 8 named-pipe tests (each with an explicit
+CTest timeout, so a blocking-I/O regression fails rather than hangs), 1
+aggregate entry, and 3 fake-peer entries. See
+[`native/README.md`](native/README.md) for what the scaffold is, what it
+deliberately is not, and how the tests map to the required coverage.
 
 ## Running the evaluation tool
 

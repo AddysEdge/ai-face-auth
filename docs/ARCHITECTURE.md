@@ -166,7 +166,7 @@ ai-face-auth/
                                  diagnostics, random, clock, transport, boundaries, fake_peer
     src/                         implementations
     tools/fake_peer_main.cpp     faceauth_ipc_fake - runs one protocol exchange
-    tests/                       43 CTest protocol cases
+    tests/                       56 protocol + 8 named-pipe test cases
   .github/
     workflows/                   ci.yml (Python + native x64 Debug/Release + hygiene), codeql.yml
     dependabot.yml  pull_request_template.md  ISSUE_TEMPLATE/

@@ -18,13 +18,14 @@ tested now, before any privileged component is written.
 | `include/faceauth/ipc/state_machine.hpp`, `src/state_machine.cpp` | Client and server state machines, concurrency admission |
 | `include/faceauth/ipc/replay_cache.hpp`, `src/replay_cache.cpp` | Duplicate request-ID and nonce-replay rejection |
 | `include/faceauth/ipc/random.hpp`, `src/random.cpp` | CSPRNG request IDs and nonces (`BCryptGenRandom` on Windows) |
-| `include/faceauth/ipc/clock.hpp` | Injectable clock, so deadlines are deterministically testable |
+| `include/faceauth/ipc/clock.hpp` | Injectable **monotonic** clock. No wall clock takes part in any security decision |
 | `include/faceauth/ipc/diagnostics.hpp`, `src/diagnostics.cpp` | Privacy-safe structured events with a field denylist |
 | `include/faceauth/ipc/boundaries.hpp` | **Inert** interface declarations marking the future provider/service boundaries |
 | `include/faceauth/ipc/transport.hpp`, `src/transport_*.cpp` | In-memory transport, and a user-owned loopback named pipe |
 | `include/faceauth/ipc/fake_peer.hpp`, `src/fake_peer.cpp` | Fake client and fake server |
 | `tools/fake_peer_main.cpp` | `faceauth_ipc_fake` - runs one protocol exchange |
-| `tests/` | 43 CTest cases covering the whole contract |
+| `tests/test_protocol.cpp` | 56 protocol test cases |
+| `tests/test_named_pipe.cpp` | 8 Windows named-pipe test cases, all with CTest timeouts |
 
 ## What is deliberately absent
 
@@ -123,20 +124,74 @@ The Phase 2 brief's required native test list maps to these CTest cases:
 | Unknown protocol versions | `protocol.unknown_protocol_version_is_rejected` |
 | Oversized messages | `protocol.oversized_message_is_rejected_before_allocation` |
 | Duplicate request IDs | `protocol.duplicate_request_id_is_rejected` |
+| Reserved/removed message type | `protocol.reserved_message_type_3_is_rejected` |
 | Replayed nonces | `protocol.replayed_nonce_is_rejected` |
 | Expired requests | `protocol.expired_request_is_rejected_by_server`, `protocol.expired_result_cannot_be_consumed`, `protocol.result_arriving_after_the_deadline_is_rejected` |
-| Timeouts | `protocol.client_timeout_denies`, `protocol.server_timeout_denies` |
-| Cancellation | `protocol.cancellation_moves_both_sides_out_of_flight` |
+| Monotonic-only expiry | `protocol.wire_format_carries_no_absolute_timestamp`, `protocol.client_deadline_is_derived_from_its_own_monotonic_clock`, `protocol.server_deadline_is_derived_from_its_own_monotonic_clock`, `protocol.result_ttl_cannot_extend_the_client_deadline`, `protocol.expiry_advances_only_with_the_injected_monotonic_clock` |
+| Timeouts | `protocol.client_timeout_denies`, `protocol.server_timeout_while_idle_is_an_invalid_transition`, and the whole `named_pipe.*` group for real bounded I/O |
+| Cancellation | **Not implemented - deliberately deferred.** See "Cancellation is deferred" below. `protocol.client_can_abandon_locally_without_sending_anything` and `protocol.abandoning_a_client_leaves_the_server_untouched` document what version 1 actually does. |
 | Invalid state transitions | `protocol.client_invalid_state_transition`, `protocol.server_invalid_state_transition`, `protocol.client_rejects_a_request_message_from_the_server`, `protocol.server_rejects_a_result_message_from_the_client` |
 | Client disconnect | `protocol.server_handles_client_disconnect`, `protocol.mid_request_disconnect_denies` |
 | Server disconnect | `protocol.client_handles_server_disconnect` |
-| Concurrent requests | `protocol.concurrent_requests_are_admission_controlled`, `protocol.concurrent_sessions_do_not_share_replay_state` |
+| Concurrent requests | `protocol.concurrency_gate_admits_only_the_configured_number_simultaneously` (8 real threads released together), `protocol.server_sessions_sharing_a_gate_cannot_verify_concurrently` (two sessions, a backend that genuinely blocks inside `verify()`), `protocol.replay_cache_is_safe_under_concurrent_observers` |
 | Incorrect identity binding | `protocol.result_with_wrong_identity_binding_is_rejected`, `protocol.result_with_wrong_request_id_is_rejected`, `protocol.result_with_wrong_nonce_is_rejected` |
 | Reuse of a successful result | `protocol.successful_result_cannot_be_reused` |
 
 Plus service-restart behaviour, replay-cache eviction and its fail-closed full
 state, result-lifetime capping, opaque-field length caps, CSPRNG quality, and
 the privacy properties of the diagnostics layer.
+
+**Totals on Windows:** 56 named protocol tests + 8 named-pipe tests + 1
+aggregate entry (`protocol.all_registered_tests`) + 3 fake-peer entries =
+**68 CTest entries**. On a non-Windows host the 8 named-pipe entries and 1
+fake-peer entry are not registered.
+
+## Bounded I/O is a tested property, not a claim
+
+An earlier version of the named-pipe transport ignored the caller's timeout
+entirely and used blocking `ConnectNamedPipe`/`ReadFile`/`WriteFile`. Its tests
+passed, because none of them ever faced an unresponsive peer.
+
+Every operation now uses `FILE_FLAG_OVERLAPPED` with its own `OVERLAPPED` and a
+manual-reset event, waits with `GetOverlappedResultEx` (a real millisecond
+bound), and on expiry calls `CancelIoEx` for that exact operation followed by a
+blocking `GetOverlappedResult` drain - because Microsoft documents that
+`CancelIoEx` "does not wait for all canceled operations to complete" and that
+the `OVERLAPPED` must not be freed or reused until they have. `close()` never
+calls `FlushFileBuffers`, which waits for the peer to drain.
+
+The `named_pipe.*` tests each create a peer that deliberately does nothing, and
+assert both the `Timeout`/`Disconnected` result **and** that the call returned
+inside a sane bound. Every one carries a CTest `TIMEOUT` property, so a
+regression that reintroduced blocking I/O fails the run instead of hanging it.
+
+## Cancellation is deferred, not implemented
+
+Protocol version 1 has **no cancellation message**, and message type 3 is
+permanently reserved. A v1 server calls its verification backend synchronously,
+so it cannot read a cancellation while verifying - the message could only ever
+have been handled between requests, which is not cancellation of anything.
+
+What exists instead is `ClientSession::abandon()`: the client stops waiting
+locally and sends nothing; the server's own monotonic deadline releases its
+side. `protocol.abandoning_a_client_leaves_the_server_untouched` asserts the
+uncomfortable half of that honestly - a verification already in flight still
+runs to completion.
+
+Real in-flight cancellation needs an asynchronous server, a cancellable
+backend, and a protocol version bump. See ADR-0003 section 5.8 and entry
+criterion B16.
+
+## The concurrency gate: what it does and does not model
+
+`ConcurrencyGate` is a small, thread-safe counting gate. A `ServerSession`
+constructed with one really does acquire it before verifying and release it
+afterwards, so two concurrent sessions sharing a gate cannot both run a
+verification - `protocol.server_sessions_sharing_a_gate_cannot_verify_concurrently`
+proves it with a backend that blocks inside `verify()`.
+
+It does **not** model a production accept loop, a queue, or any fairness
+policy. Those are Phase 3 concerns, and this scaffold does not claim them.
 
 ## Provenance and licensing
 

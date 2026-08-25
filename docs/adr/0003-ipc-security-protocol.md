@@ -52,7 +52,7 @@ A verification result must be:
 | **Request-bound** | Echoes the exact `request_id` of the request that produced it. |
 | **Identity-bound** | Echoes the exact `account_binding` of that request. |
 | **Nonce-bound** | Echoes the exact `nonce` of that request. |
-| **Deadline-bound** | Rejected if the originating request's deadline has passed. |
+| **Deadline-bound** | Rejected if the client's own locally-derived, monotonic deadline has passed. |
 
 Any mismatch on any of these is a hard `DENY`, not a retry.
 
@@ -67,7 +67,7 @@ Any mismatch on any of these is a hard `DENY`, not a retry.
 | R5 | Explicit state machine. Any message arriving in a state that does not accept it is a protocol error and terminates the exchange. |
 | R6 | Mutually authenticated at the OS level (section 5.2), not by a shared secret in the protocol. |
 | R7 | Privacy-safe diagnostics. The same denylist discipline as Phase 1's `SecurityLogger`. |
-| R8 | Cancellable and deadline-bounded, so the logon screen never hangs. |
+| R8 | Deadline-bounded on both sides, so the logon screen never hangs. **In-flight cancellation is explicitly OUT of scope for version 1** - see section 6. |
 
 ## 3. Evidence from official sources
 
@@ -140,8 +140,14 @@ All integers little-endian. Fixed 16-byte header:
 | 8 | 4 | `payload_length` | `<= 4096`, checked **before** allocation |
 | 12 | 4 | `reserved` | must be 0; nonzero is a protocol error |
 
-Message types: `1 VerifyRequest`, `2 VerifyResult`, `3 CancelRequest`,
-`4 ProtocolError`.
+Message types: `1 VerifyRequest`, `2 VerifyResult`, `4 ProtocolError`.
+**Type `3` is RESERVED and permanently unassigned in version 1** - it held a
+`CancelRequest` in an earlier draft; see section 6 for why that was removed
+rather than kept. A message of type 3 is rejected as `UnknownMessageType`.
+
+**No absolute timestamp appears anywhere in this format.** Durations are
+bounded, relative milliseconds, and each side derives its own deadline from its
+own monotonic clock. Section 5.1a explains why.
 
 Opaque fields are length-prefixed (`uint16` length, then bytes) and capped
 individually.
@@ -155,7 +161,7 @@ individually.
 | `account_binding` | opaque, 1..128 bytes | An opaque handle for the Windows identity being verified. **Not** a password, not a template, not a secret - a stable local identifier. |
 | `session_id` | `uint32` | Logon session the request belongs to. |
 | `desktop_binding` | opaque, 0..64 bytes | Opaque desktop/station discriminator. |
-| `deadline_unix_ms` | `uint64` | Absolute deadline. |
+| `requested_lifetime_ms` | `uint32` | **Relative** duration, `1..kMaxRequestLifetimeMs` (30 s). Zero or over-max fails to parse. The server clamps it again and starts its own deadline; the client's clock is never trusted. |
 | `flags` | `uint32` | Reserved; must be 0. |
 
 **`VerifyResult`** (server -> client)
@@ -167,16 +173,44 @@ individually.
 | `account_binding` | opaque | Must equal the request's. |
 | `outcome` | `uint8` | `0` = deny, `1` = allow. |
 | `reason_code` | `uint16` | Coarse, non-identifying. |
-| `expires_unix_ms` | `uint64` | Result is dead after this. |
-
-**`CancelRequest`** (client -> server): `request_id` (16 bytes).
+| `result_ttl_ms` | `uint32` | **Relative** duration, `<= kMaxResultValidityMs` (5 s); over-max fails to parse. The client clamps it to the smaller of this, the protocol maximum, and its own remaining request window - so it can only ever shorten validity. |
 
 **`ProtocolError`** (either direction): `request_id` (16 bytes, may be all
 zero) + `error_code` (`uint16`).
 
 Note what is *absent*: there is no free-form field, no blob, no image, no
-vector, no string of unbounded length, and no field that could carry a
-credential. Requirement 2.1 is enforced by the format itself.
+vector, no string of unbounded length, no absolute timestamp, and no field that
+could carry a credential. Requirement 2.1 is enforced by the format itself.
+
+### 5.1a Time base: monotonic and relative, never wall-clock
+
+An earlier draft serialized Unix wall-clock deadlines. That was wrong. System
+time can jump backwards or forwards - NTP correction, a user changing the
+clock, a VM resuming from a snapshot, a dual-boot machine disagreeing about the
+RTC. A backwards jump would silently *extend* a "short-lived" result; a
+forwards jump would expire a request that had barely started. Either turns a
+security control into a liability.
+
+The rules, all implemented and tested in `native/`:
+
+1. The **client** starts its own monotonic deadline **before** sending, from
+   its own clock.
+2. The request carries only `requested_lifetime_ms`, a bounded relative value.
+3. The **server** validates that lifetime against the protocol maximum and
+   starts its **own** monotonic deadline on arrival.
+4. **Replay-cache entries expire against the server's monotonic clock.**
+5. The result carries only `result_ttl_ms`, a bounded relative value.
+6. The client caps result validity at
+   `min(received TTL, kMaxResultValidityMs, its own remaining request window)`.
+   **A result can only ever shorten the client's window, never extend it.**
+7. Neither endpoint trusts a peer-supplied absolute timestamp, because none is
+   sent.
+8. `steady_clock` epoch values are **never** serialized: their origin is
+   implementation-defined and meaningless to another process, so comparing two
+   processes' values would silently reintroduce the same class of bug.
+
+Consequence: a wall-clock change cannot extend or shorten request or result
+validity, because no wall clock is consulted at any point.
 
 ### 5.2 Endpoint identity and access control
 
@@ -209,7 +243,10 @@ that would only look stronger.
 ### 5.3 State machines
 
 **Client:** `Idle` -> `AwaitingResult` -> (`ResultAvailable` -> `Consumed`) |
-`Cancelled` | `Failed`.
+`Abandoned` | `Failed`.
+
+`Abandoned` is **local only**: the client stops waiting and sends nothing. It
+is not cancellation and is not described as such anywhere (section 6).
 
 - `Idle`: only `SendRequest` is legal.
 - `AwaitingResult`: accepts `VerifyResult`, `ProtocolError`, `Cancel`, timeout,
@@ -219,11 +256,11 @@ that would only look stronger.
 - `Consumed`, `Cancelled`, `Failed` are terminal. Every operation on a terminal
   state fails.
 
-**Server:** `Idle` -> `Processing` -> `Responded` | `Cancelled` | `Failed`.
+**Server:** `Idle` -> `Processing` -> `Responded` | `Failed`.
 
 - `Idle`: accepts `VerifyRequest`. A `VerifyResult` arriving at the server is an
   invalid transition.
-- `Processing`: accepts `CancelRequest`, deadline expiry, disconnect.
+- `Processing`: accepts deadline expiry and disconnect. There is no cancellation message in version 1 (section 6).
 - `Responded`, `Cancelled`, `Failed` are terminal.
 
 **Any invalid transition is `InvalidStateTransition`, is reported once as a
@@ -240,7 +277,7 @@ retried.**
 | T4 | Replay of a captured `VerifyResult` | Nonce + `request_id` echo checks client-side; server-side seen-set for both | Bounded seen-set (section 5.6); entries expire with their deadlines. |
 | T5 | Result substitution - a valid result for user A used to log in user B | `account_binding` echo checked before consume | The binding is only as good as how the provider derives it (Q1). |
 | T6 | Result reuse - one successful verification unlocks twice | Single-use consume; terminal `Consumed` state | An in-process attacker who can reach the object before consume; out of scope at this layer. |
-| T7 | TOCTOU between "verified" and "credential submitted" | Short `expires_unix_ms`; the provider must submit within that window or discard; the result is consumed immediately before serialization, not held | **Real and irreducible.** A gap always exists between the biometric decision and the credential submission. Shrinking the window narrows it; it cannot be closed. Recorded, not hidden. |
+| T7 | TOCTOU between "verified" and "credential submitted" | Short monotonic result TTL; the provider must submit within that window or discard; the result is consumed immediately before serialization, not held | **Real and irreducible.** A gap always exists between the biometric decision and the credential submission. Shrinking the window narrows it; it cannot be closed. Recorded, not hidden. |
 | T8 | Confused deputy - a low-privilege process makes the provider verify on its behalf | The provider is only ever driven by LogonUI in a real logon scenario; the request carries `session_id` and `desktop_binding` and the service rejects mismatches | Depends on those bindings being derived correctly (Q1). |
 | T9 | Malformed / hostile message | Magic + version + reserved + length checks before allocation; strict field parsing with no tolerance | none material |
 | T10 | Truncated message | Explicit length checks at every field read; short reads are `TruncatedMessage` | none material |
@@ -249,8 +286,8 @@ retried.**
 | T13 | Resource-exhaustion DoS | Bounded instances, bounded in-flight requests, bounded seen-set, bounded read sizes, per-connection deadlines | An attacker that can occupy the allowed connections degrades the tile; the tile then fails over to another provider (ADR-0002 R6). |
 | T14 | Slow-loris / hang | Every read/write has a deadline; the state machine has an absolute request deadline | none material |
 | T15 | Service restart mid-request | Client sees disconnect, moves to `Failed`, DENY. In-flight server state is not persisted - a restart voids everything | Correct by construction: a restarted service must never honour a pre-restart request. |
-| T16 | Client disconnect mid-request | Server cancels, releases the camera, and drops state | none material |
-| T17 | Concurrent requests | One in-flight verification per machine; extras rejected with `Busy` (ADR-0002 5.6) | A legitimate second user waits. Acceptable. |
+| T16 | Client disconnect mid-request | Server abandons the exchange, releases the camera, and drops state on the next transport error or at its own deadline | A synchronous v1 server only notices at the next I/O boundary; a verification already running still finishes. See section 6. |
+| T17 | Concurrent requests | `ConcurrencyGate` (thread-safe) admits one in-flight verification; a `ServerSession` constructed with a gate holds it across `verify()`, so a second concurrent session is rejected with `Busy` rather than queued. Proven by `server_sessions_sharing_a_gate_cannot_verify_concurrently`, which uses a backend that genuinely blocks inside `verify()`. | The gate is a counting primitive, not a production accept loop: it models admission control only, and says nothing about queueing or fairness. A legitimate second user is refused, not queued. |
 | T18 | Log-based leakage | Privacy-safe diagnostics (section 5.5) | Correlation from timing/counts remains possible; treated as acceptable. |
 
 ### 5.5 Diagnostics and privacy
@@ -297,6 +334,44 @@ in the native layer:
 7. An unknown protocol version is a DENY.
 8. When in doubt, DENY. There is no code path whose default is allow.
 
+### 5.8 Cancellation is deferred to Phase 3, not half-implemented
+
+**Version 1 has no cancellation message, and nothing in this repository claims
+otherwise.**
+
+An earlier draft defined a `CancelRequest` (message type 3). It was removed,
+because it could not have worked. A version-1 `ServerSession` handles a request
+by calling `IVerificationBackend::verify()` **synchronously**; while that call
+is running the server is not reading its transport, so a cancellation could
+only ever have been observed *between* requests - which is not cancellation of
+anything. Keeping the message would have meant advertising a control the
+implementation did not provide, which is precisely the class of defect this
+review exists to remove.
+
+What version 1 provides instead:
+
+- **`ClientSession::abandon()`** - the client stops waiting and moves to a
+  terminal `Abandoned` state. It sends nothing. The server is not told, and its
+  own monotonic deadline releases its side. `abandoning_a_client_leaves_the_
+  server_untouched` in the native suite asserts exactly this, including the
+  uncomfortable part: a verification already in flight still runs to completion.
+- **Bounded deadlines on both sides**, which is what actually stops the logon
+  screen hanging (R8).
+
+**Phase 3 requirement.** Real in-flight cancellation needs all of:
+
+1. an asynchronous or event-loop server that can read its transport while a
+   verification is running;
+2. a cancellable verification backend (the camera capture and the pipeline both
+   need cancellation points);
+3. a new message type and therefore a **protocol version bump** - type 3 stays
+   reserved until then;
+4. state-machine transitions for "cancelled mid-verification" on both sides,
+   with the same fail-closed guarantees as every other terminal state.
+
+None of that exists in Phase 2, and none of it should be added before ADR-0002's
+blockers clear.
+
 ## 6. What is implemented in Phase 2, and what is not
 
 **Implemented** (`native/`, inert, normal desktop, no privileges):
@@ -308,12 +383,20 @@ in the native layer:
 - Cryptographically random `request_id`/`nonce` generation
   (`BCryptGenRandom` on Windows).
 - Replay detection (duplicate request IDs, reused nonces).
-- Deadline, timeout, and cancellation handling against an injectable clock.
+- Deadline and timeout handling against an injectable **monotonic** clock.
+- Local client abandonment (no message sent).
+- Thread-safe replay cache and a thread-safe concurrency gate that a
+  `ServerSession` really does hold across its verification.
 - Single-use, request/identity/nonce/deadline-bound result consumption.
 - Privacy-safe structured diagnostics.
 - A fake client and a fake server using **opaque test identities and simulated
   allow/deny outcomes only**, whose output is explicitly labelled
   `PROTOCOL-TEST RESULT (NOT A WINDOWS AUTHENTICATION DECISION)`.
+- A Windows named-pipe transport with **genuinely bounded** connect, read, and
+  write, using `FILE_FLAG_OVERLAPPED`, per-operation `OVERLAPPED` structures
+  with manual-reset events, `GetOverlappedResultEx` for the bounded wait, and
+  `CancelIoEx` plus a blocking drain on expiry. `close()` never calls
+  `FlushFileBuffers`, which would wait on the peer.
 - Inert interface declarations marking the future provider/service boundaries.
 
 **Not implemented, deliberately:**
@@ -325,7 +408,10 @@ in the native layer:
 - No camera access in the native code.
 - No SDDL construction for a *privileged* endpoint. The fake transport's pipe
   is owned by the running user and is for protocol testing only; section 5.2's
-  service SDDL is a specification for Phase 3.
+  service SDDL, service SID, System-integrity label, and
+  `ImpersonateNamedPipeClient` token check are a specification for Phase 3.
+- **No in-flight cancellation** (section 5.8).
+- No production accept loop, connection queue, or fairness policy.
 
 ## 7. Security implications
 
@@ -357,6 +443,7 @@ in the native layer:
 | Q2 | Is `session_id` + `desktop_binding` sufficient to bind a request to the real logon desktop, and what are they at the moment LogonUI is running? | 3 |
 | Q3 | Should the client require a code-signature check of the server binary in addition to the ACL, given section 5.2's SYSTEM limitation? | 3 |
 | Q4 | What is the right result-validity window once real end-to-end latency is measured (ADR-0002 B2)? 5 s is a placeholder. | 3 |
+| Q5 | What does the asynchronous server shape look like that makes in-flight cancellation possible (section 5.8), and what protocol version introduces it? | 3 |
 
 ## 10. Status
 

@@ -1,0 +1,105 @@
+name: Feature request
+description: Propose a change or addition.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read
+        [CONTRIBUTING.md](https://github.com/AddysEdge/ai-face-auth/blob/main/CONTRIBUTING.md)
+        and the ["What this project will never do"](https://github.com/AddysEdge/ai-face-auth/blob/main/SECURITY.md#what-this-project-will-never-do)
+        section of SECURITY.md first. Some proposals are permanently out of
+        scope, and it saves everyone time to know that up front.
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Permanent boundary check
+      description: >-
+        These are non-negotiable in every phase. A proposal that requires any of
+        them cannot be accepted, however useful it would be.
+      options:
+        - label: This does not require handling a Windows password in any form, including via an API that returns a credential blob to this project.
+          required: true
+        - label: This does not require filtering or hiding the password provider or Windows Hello, or making this the sole sign-in option.
+          required: true
+        - label: This does not require modifying LogonUI, Winlogon, LSA, Credential Guard, Windows Hello, authentication policies, or account settings.
+          required: true
+        - label: This does not bypass Windows' own authorization decision or report a Windows sign-in from a face match alone.
+          required: true
+        - label: This does not require undocumented NGC or Windows Hello internals.
+          required: true
+        - label: This does not send biometric data off the machine, and does not require committing biometric data, model weights, keys, certificates, or build output.
+          required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this belong to?
+      description: >-
+        Credential Provider, service, credential serialization, TPM,
+        certificate, and camera work are GATED behind the Phase 3 entry
+        criteria - not permanently banned. Classify the proposal honestly
+        rather than mis-labelling it to get past a checkbox.
+      options:
+        - Phase 1 (the standalone Python pipeline)
+        - Phase 2 (docs, ADRs, or the inert native scaffold)
+        - Repository infrastructure (CI, tooling, docs)
+        - Phase 3 (gated - Credential Provider, service, or credential handling)
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: phase3
+    attributes:
+      label: If this is Phase 3 (gated)
+      description: >-
+        Leave unticked if it is not Phase 3. Phase 3 work cannot start until
+        every Part B entry criterion in
+        docs/PHASE2_ACCEPTANCE_CRITERIA.md - including B4a and B16, since the
+        list is not a contiguous range - passes AND the owner records explicit
+        approval. A proposal is welcome before then; implementation is not.
+      options:
+        - label: I understand this cannot be implemented until all Phase 3 entry criteria pass and the owner records explicit approval.
+          required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the problem, not the solution you already have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and privacy impact
+      description: >-
+        Required. Does it touch liveness, template storage, rate limiting,
+        logging, the fail-closed paths, or the IPC contract? Does it widen who
+        can read biometric data? "None, because..." is a fine answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting evidence
+      description: >-
+        Any claim about Windows behaviour needs a link to current official
+        Microsoft documentation. Any claim about accuracy or spoof resistance
+        needs measurements. Blog posts and "it seems to work" are not evidence.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -3,9 +3,21 @@
 Scope: the Phase 1 standalone demo application in this repository. It does
 **not** protect a Windows user account - it never touches LogonUI,
 Winlogon, LSA, Credential Guard, or Windows Hello. Its "asset" is access to
-its own demo state (a Tkinter window / CLI exit code). Phase 2's threat
-model (a real Credential Provider) is a superset of this one plus the
-concerns in `docs/PHASE2_CREDENTIAL_PROVIDER.md`.
+its own demo state (a Tkinter window / CLI exit code).
+
+**Two other threat models exist and are separate from this one:**
+
+- The **IPC protocol threat model** for the (unbuilt) provider-to-service
+  channel is in
+  [`adr/0003-ipc-security-protocol.md`](adr/0003-ipc-security-protocol.md)
+  section 5.4 - 18 threats covering endpoint identity, replay, result
+  substitution and reuse, TOCTOU, confused deputy, disconnects, service
+  restart, concurrency, and denial of service. The `native/` scaffold
+  implements and tests those controls, inertly.
+- The **system-level threat model** for a real Credential Provider is
+  in [`PHASE2_SECURITY_REVIEW.md`](PHASE2_SECURITY_REVIEW.md) and the ADRs. It
+  is a superset of this document, and its conclusion is that the local-account
+  case is a **NO-GO**.
 
 For every threat: **Attack**, **Mitigation actually implemented**,
 **Residual risk / limitation stated plainly**.
@@ -120,8 +132,13 @@ gap specific to this app.
 **Residual risk:** stated explicitly. A local, already-elevated or
 same-account attacker can re-enroll or tamper with this application's own
 data. Real defense against this class of attacker requires OS-level
-process isolation (Phase 2's service/secure-desktop boundary - see
-`docs/PHASE2_CREDENTIAL_PROVIDER.md`), not a userland demo app.
+process isolation (the service/secure-desktop boundary designed in
+`docs/adr/0002-process-service-and-camera-boundaries.md`), not a userland
+demo app - and note that the pre-logon store that design would need is
+**weaker** against a SYSTEM/Administrator attacker than Phase 1's user-scope
+DPAPI, not stronger (ADR-0002 section 5.5). Pre-logon availability and
+per-user protection pull in opposite directions; that trade-off is stated
+rather than assumed away.
 
 ## 7. Log leakage
 

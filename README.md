@@ -1,10 +1,89 @@
-# FaceAuth (Phase 1 MVP)
+# FaceAuth
+
+[![CI](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml)
 
 A local, offline, webcam-based face-authentication **demo/research
-prototype**. It is Phase 1 of a longer-term exploration into whether a
-legitimate, Microsoft-supported Windows Credential Provider could one day
-offer face authentication as an alternative sign-in method. Phase 1 itself
-is a standalone application - it does not touch Windows sign-in in any way.
+prototype**. It is a longer-term exploration into whether a legitimate,
+Microsoft-supported Windows Credential Provider could one day offer face
+authentication as an alternative sign-in method. **It does not touch Windows
+sign-in in any way, and after the Phase 2 review it is clear that for a local
+Windows account it never can - see below.**
+
+## Current status
+
+| | |
+|---|---|
+| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 137 tests. |
+| **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
+| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, and B15 are the most architecture-critical, but they are not the whole gate. |
+
+**No Credential Provider is registered. No Windows service is installed. No
+Windows password is handled anywhere in this repository.** Nothing here reads
+or changes Windows authentication, registry, LSA, Winlogon, LogonUI, Credential
+Guard, or Windows Hello state.
+
+### The Phase 2 result, stated plainly
+
+The [Phase 2 security review](docs/PHASE2_SECURITY_REVIEW.md) reached
+**CONDITIONAL GO** - and the condition changes the product:
+
+> The originally intended use case - **face unlock for a local Windows account
+> on a personal machine** - is a **NO-GO**. There is no documented, publicly
+> supported Windows credential mechanism that lets a third-party credential
+> provider authenticate a *local* account without handling that account's
+> password, which this project forbids absolutely.
+
+| Windows account type | Result |
+|---|---|
+| Local Windows account | **NO-GO** |
+| Microsoft account (MSA) | **NO-GO** |
+| Active Directory domain account | **CONDITIONAL GO** - needs a domain controller, an enterprise PKI, certificate enrolment, account mapping, and CRL/OCSP reachable before sign-in |
+| Microsoft Entra ID account | **DEFERRED - unproven** |
+
+Why: certificate logon is Kerberos PKINIT and terminates at a KDC holding an
+AD DS account object; Windows Hello for Business has no local-account
+deployment model; and there is no public API by which a third party can gate
+the Windows Hello NGC container. Each of those is quoted from Microsoft's own
+documentation in
+[ADR-0001](docs/adr/0001-windows-account-and-credential-strategy.md).
+
+So for a personal machine, this repository's application-level control **is**
+the answer, not a stepping stone to one.
+
+### What has to be true before Phase 3
+
+**Every entry criterion in
+[`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md)
+Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, and **B16** - **and**
+the repository owner must record explicit written approval. The identifiers are
+not a contiguous range, so "B1-B15" would silently omit two of them.
+
+Three of those are the most architecture-critical, in the sense that failing any
+one of them would invalidate the design rather than merely delay it:
+
+- **B1** - whether a third-party Session 0 service can open a camera before
+  interactive logon. If this cannot be cleared using documented APIs, the
+  architecture is a NO-GO outright.
+- **B2** - whether pre-logon latency and reliability are acceptable.
+- **B15** - whether *any* password-free, OS-mediated mechanism exists to
+  authorize a pre-logon enrollment. An earlier design claimed
+  `CredUIPromptForWindowsCredentials` did this; that was wrong - the API returns
+  the credential blob to the caller and does not validate it - so the claim was
+  withdrawn and no replacement is proposed. Without one, enrollment cannot be
+  authorized safely at all.
+
+**The rest are not optional.** They include the AD + PKI lab (**B4**),
+verification against a Full Enforcement domain controller (**B4a**), the
+disposable-VM policy (**B5**), the rehearsed recovery runbook (**B6**), the
+owner's product-scope decision (**B7**), the native re-implementation plan
+(**B10**), an independent Windows-authentication security review (**B11**), and
+a cancellable-backend design if in-flight cancellation is in scope (**B16**).
+
+On certificates specifically: a **strong** account binding is required. Per
+Microsoft's KB5014754, UPN and other name-based mappings are weak and are denied
+by domain controllers in Full Enforcement (since 11 February 2025), and the
+compatibility rollback key has been unsupported since 9 September 2025.
 
 ## What this project does
 
@@ -42,9 +121,12 @@ is a standalone application - it does not touch Windows sign-in in any way.
 - It does **not** retain raw enrollment photos by default.
 - It does **not** log biometric data, raw images, passwords, or secrets
   (enforced structurally - see `docs/ARCHITECTURE.md` "Logging").
-- It does **not** implement Phase 2 (the Windows Credential Provider) -
-  that is a design document only (`docs/PHASE2_CREDENTIAL_PROVIDER.md`),
-  not code.
+- It does **not** implement a Windows Credential Provider. Nothing registers
+  a COM class or a CLSID, nothing installs a Windows service, and nothing
+  constructs a Windows credential structure. The `native/` directory holds an
+  **inert** IPC contract scaffold whose fake client and server use opaque test
+  identities and simulated outcomes, and label every result
+  `PROTOCOL-TEST RESULT (NOT A WINDOWS AUTHENTICATION DECISION)`.
 
 ## Setup
 
@@ -99,6 +181,8 @@ CHECKING LIVENESS → VERIFYING IDENTITY → ACCESS GRANTED/DENIED → TRY AGAIN
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\ruff.exe check --no-cache src tests scripts
+.venv\Scripts\mypy.exe --no-incremental src
 ```
 
 All tests run against mocked/fake camera, model, and liveness backends -
@@ -106,6 +190,34 @@ no webcam or GPU required - except `tests/test_real_models.py` (marked
 `realmodel`) and `tests/test_storage_dpapi_backend.py`, which run against
 the actual downloaded model files / real Windows DPAPI respectively, and
 skip automatically if their prerequisites aren't present.
+
+If your environment denies pytest access to the system temp directory,
+redirect it into the repository (`.pytest_tmp/` is gitignored):
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp
+```
+
+## Building and testing the native scaffold
+
+Optional - only needed if you are working on `native/`. Requires Windows x64,
+MSVC (VS 2022 Build Tools, "Desktop development with C++"), and CMake 3.21+.
+There are no third-party native dependencies.
+
+```powershell
+cmake -S native -B native/build -A x64
+cmake --build native/build --config Debug
+ctest --test-dir native/build -C Debug --output-on-failure
+cmake --build native/build --config Release
+ctest --test-dir native/build -C Release --output-on-failure
+```
+
+Warnings are errors (`/W4 /permissive- /WX`). The suite is **82 CTest entries
+on Windows**: 70 named protocol tests, 8 named-pipe tests (each with an explicit
+CTest timeout, so a blocking-I/O regression fails rather than hangs), 1
+aggregate entry, and 3 fake-peer entries. See
+[`native/README.md`](native/README.md) for what the scaffold is, what it
+deliberately is not, and how the tests map to the required coverage.
 
 ## Running the evaluation tool
 
@@ -245,14 +357,37 @@ rate limiter for local testing:
 See `docs/ARCHITECTURE.md` for the full component flow, interface table,
 and folder structure.
 
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [`docs/PHASE2_SECURITY_REVIEW.md`](docs/PHASE2_SECURITY_REVIEW.md) | The Phase 2 architecture and security review, and its GO/NO-GO result |
+| [`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md) | What Phase 2 delivered, and the exact entry criteria for Phase 3 |
+| [`docs/adr/0001-...`](docs/adr/0001-windows-account-and-credential-strategy.md) | Which Windows accounts can be supported, and what credential is actually submitted |
+| [`docs/adr/0002-...`](docs/adr/0002-process-service-and-camera-boundaries.md) | Process/service topology, Session 0 camera blockers, why the preview was removed |
+| [`docs/adr/0003-...`](docs/adr/0003-ipc-security-protocol.md) | The versioned IPC protocol and its threat model |
+| [`docs/adr/0004-...`](docs/adr/0004-enrollment-provisioning-and-recovery.md) | Enrollment, provisioning, revocation, recovery, uninstall |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented Phase 1 architecture |
+| [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 13 threats, mitigations, and residual risks |
+| [`docs/RESEARCH.md`](docs/RESEARCH.md) | Why every model and design choice was made |
+| [`docs/MODEL_LICENSES.md`](docs/MODEL_LICENSES.md) | Model provenance and licensing |
+| [`docs/ACCEPTANCE_AUDIT.md`](docs/ACCEPTANCE_AUDIT.md) | Requirement-to-proof mapping |
+| [`native/README.md`](native/README.md) | The inert IPC scaffold: build, test, and what it deliberately is not |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what this project will never do |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, commands, security boundaries, prohibited changes |
+
 ## Future development
 
-- Phase 2 (Windows Credential Provider) - design only, see
-  `docs/PHASE2_CREDENTIAL_PROVIDER.md`. Not started.
+- **Phase 3 (Windows Credential Provider) - gated, not started.** Blocked on
+  B1/B2 plus a domain+PKI lab and an explicit product decision to accept the
+  AD-domain-only scope. See
+  [`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md)
+  Part B. Note that for a local account this is a **NO-GO**, so "wait for
+  Phase 3" is not the answer for a personal machine - this application is.
 - TPM-backed template hardening (NCrypt/Platform Crypto Provider) -
   designed, not implemented; see `docs/RESEARCH.md` section 11.
-- Using this machine's IR camera (present on the dev machine, unused by
-  Phase 1) for a real liveness/security improvement.
+- Using this machine's IR camera (present on the dev machine, unused today)
+  for a real liveness/security improvement.
 - Fine-tuning/replacing the embedding model - the `FaceEmbeddingModel`
   interface and ONNX Runtime backend make this a drop-in change; see
   `docs/RESEARCH.md` section 24.

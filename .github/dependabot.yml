@@ -1,0 +1,55 @@
+version: 2
+
+# Every runtime and dev dependency in this project is exactly pinned in
+# pyproject.toml (see docs/RESEARCH.md section 18 - the pins are the versions
+# actually resolved and tested against). Dependabot therefore acts as the
+# mechanism that surfaces a new release or advisory for review, rather than as
+# a silent updater: each bump arrives as a PR that must pass the full CI matrix
+# (pytest, Ruff, mypy, native Debug and Release) before it can be merged.
+#
+# The native project has no third-party dependencies, so there is no ecosystem
+# to register for it. If one is ever added, register it here at the same time.
+
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps"
+      include: scope
+    groups:
+      # A CV/ML version bump is rarely safe in isolation: opencv, mediapipe,
+      # numpy, and onnxruntime constrain each other, and mediapipe pulls
+      # opencv-contrib-python transitively (docs/RESEARCH.md section 18).
+      # Grouping them means one PR to evaluate rather than four that conflict.
+      cv-ml-stack:
+        patterns:
+          - "opencv-*"
+          - "onnxruntime*"
+          - "mediapipe"
+          - "numpy"
+      dev-tooling:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"

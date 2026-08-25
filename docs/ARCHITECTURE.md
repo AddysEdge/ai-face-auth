@@ -2,8 +2,27 @@
 
 This document describes the actual, implemented Phase 1 architecture. For
 the research and rationale behind each choice, see `docs/RESEARCH.md`. For
-what could go wrong, see `docs/THREAT_MODEL.md`. For the Phase 2 (Windows
-Credential Provider) design, see `docs/PHASE2_CREDENTIAL_PROVIDER.md`.
+what could go wrong, see `docs/THREAT_MODEL.md`.
+
+For the Windows Credential Provider direction, read
+`docs/PHASE2_SECURITY_REVIEW.md` and the ADRs in `docs/adr/` **before**
+`docs/PHASE2_CREDENTIAL_PROVIDER.md` - the latter is a Phase 1-era design that
+the review supersedes in part.
+
+## What exists, and what does not
+
+| Component | State |
+|---|---|
+| Python pipeline (`src/faceauth/`) | **Implemented and working.** Everything below describes this. |
+| Native IPC contract scaffold (`native/`) | **Implemented, and deliberately inert.** A versioned message contract, parser, state machines, and a fake client/server pair that run on the normal desktop with opaque test identities and simulated outcomes. See `native/README.md`. |
+| Windows Credential Provider | **Does not exist.** No COM implementation, no CLSID, no registration. |
+| Windows service | **Does not exist.** No SCM code, no service binary, no installer. |
+| Credential serialization | **Does not exist.** No `KERB_*` structure is constructed anywhere. |
+| TPM / certificate / camera access from native code | **Does not exist.** |
+
+Nothing in this repository reads or changes Windows authentication, registry,
+LSA, Winlogon, LogonUI, Credential Guard, or Windows Hello state, and nothing
+handles a Windows password.
 
 ## Component flow
 
@@ -117,12 +136,19 @@ ai-face-auth/
   models/                       real ONNX/task weights (+ scripts/fetch_models.py to (re)download)
   data/                         created at runtime: templates/, logs/ (gitignored)
   docs/
-    RESEARCH.md                  research synthesis / source of truth
+    RESEARCH.md                   research synthesis / source of truth
     ARCHITECTURE.md               this file
     THREAT_MODEL.md
-    PHASE2_CREDENTIAL_PROVIDER.md
+    PHASE2_SECURITY_REVIEW.md     Phase 2 architecture + security review, GO/NO-GO result
+    PHASE2_ACCEPTANCE_CRITERIA.md what Phase 2 delivered; Phase 3 entry criteria
+    PHASE2_CREDENTIAL_PROVIDER.md Phase 1-era design, superseded in part by the review
     MODEL_LICENSES.md
     ACCEPTANCE_AUDIT.md
+    adr/
+      0001-windows-account-and-credential-strategy.md
+      0002-process-service-and-camera-boundaries.md
+      0003-ipc-security-protocol.md
+      0004-enrollment-provisioning-and-recovery.md
   scripts/
     fetch_models.py
     calibrate_liveness.py         live diagnostic tool - prints real blink/head-turn signal values
@@ -134,4 +160,42 @@ ai-face-auth/
     pipeline_factory.py  demo_ui.py  cli.py  evaluate.py  model_registry.py
   tests/
     conftest.py  test_*.py
+  native/                        INERT IPC contract scaffold - not a provider, not a service
+    CMakeLists.txt  README.md
+    include/faceauth/ipc/        protocol, wire, state_machine, replay_cache,
+                                 diagnostics, random, clock, transport, boundaries, fake_peer
+    src/                         implementations
+    tools/fake_peer_main.cpp     faceauth_ipc_fake - runs one protocol exchange
+    tests/                       70 protocol + 8 named-pipe test cases
+  .github/
+    workflows/                   ci.yml (Python + native x64 Debug/Release + hygiene), codeql.yml
+    dependabot.yml  pull_request_template.md  ISSUE_TEMPLATE/
 ```
+
+## Proposed Phase 3 topology (not implemented)
+
+Recorded here only so the boundary between "what runs today" and "what is
+designed" is visible in one place. Full detail and its open blockers are in
+`docs/adr/0002-process-service-and-camera-boundaries.md`.
+
+```
+LogonUI.exe (secure desktop, SYSTEM)
+  |   thin credential provider DLL - status-only UI, NO camera preview,
+  |   no ML, no model files, no camera handle
+  |
+  |   named pipe, explicit SDDL: SYSTEM + NT SERVICE\FaceAuthVerifier only
+  |   messages carry NO frames, embeddings, templates, passwords,
+  |   certificates, keys, or reusable assertions
+  v
+verification service (Session 0, LOCAL SERVICE, restricted service SID)
+  |   opens the camera, runs the pipeline, returns a short-lived, single-use,
+  |   request/identity/nonce/deadline-bound verdict
+  v
+on ALLOW: release a pre-provisioned certificate credential to the
+smart-card logon path -> LSA / Kerberos / KDC make the real decision
+```
+
+Two parts of that diagram are unproven and block Phase 3: whether a
+third-party Session 0 service can open a camera before interactive logon
+(**B1**), and whether pre-logon latency is acceptable (**B2**). The IPC layer
+in the middle is what `native/` implements, inertly.

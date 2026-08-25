@@ -1,0 +1,74 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main, "phase-*"]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published query catches an old commit.
+    - cron: "27 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-python:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          languages: python
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          category: "/language:python"
+
+  analyze-cpp:
+    name: Analyze C++
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+
+      # Manual build: the CMake project lives in native/, which autobuild does
+      # not discover. Warnings-as-errors is disabled here so a CodeQL-specific
+      # instrumentation warning cannot mask the analysis - the CI workflow is
+      # what enforces the strict-warning build.
+      - name: Build the native project
+        run: |
+          cmake -S native -B native/codeql-build -A x64 -DFACEAUTH_WARNINGS_AS_ERRORS=OFF
+          cmake --build native/codeql-build --config Release
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          category: "/language:c-cpp"

@@ -5,6 +5,14 @@ section, or execution result that proves it. Compiled after the final
 verification pass (full test suite, lint, type-check, and live app launch)
 documented at the bottom of this file.
 
+**Phase 2 note.** This document covers the Phase 1 requirements. Phase 2's own
+acceptance criteria, its Part C exclusion list, and the Phase 3 entry criteria
+live in [`PHASE2_ACCEPTANCE_CRITERIA.md`](PHASE2_ACCEPTANCE_CRITERIA.md); a
+summary of what changed is in the ["Phase 2 delta"](#phase-2-delta) section at
+the end of this file. Every Phase 1 row below was re-verified after the Phase 2
+work and still holds - **no file under `src/`, `tests/`, or `scripts/` was
+modified in Phase 2.**
+
 ## Phase 1 requirements (1-18)
 
 | # | Requirement | Proof |
@@ -315,3 +323,89 @@ regression tests, and were re-verified live after the fix, not just
 by the automated suite. Full test count after this session: **137
 passing**, ruff clean, mypy clean (up from 111 at the start of this
 session).
+
+---
+
+## Phase 2 delta
+
+Phase 2 added a security and feasibility review, four ADRs, an inert native IPC
+scaffold, CI, and community files. It changed **no Phase 1 source code**.
+
+### Phase 1 preservation, re-verified after Phase 2
+
+| Requirement | Still true? | Evidence |
+|---|---|---|
+| Works fully offline | Yes | No network call added anywhere; `native/` has no networking and its transports are in-process or a local pipe |
+| Unexpected errors fail closed | Yes | `authentication.py`'s single try/except is untouched; the native layer adopts the same rule structurally (ADR-0003 section 5.7) |
+| Raw enrollment images not retained by default | Yes | `EnrollmentConfig.retain_raw_frames` unchanged |
+| Templates protected locally | Yes | `DpapiTemplateStore` unchanged |
+| Privacy-safe logging restrictions intact | Yes | `logging_utils.py` unchanged; `native/` mirrors the discipline in `DiagnosticEvent` |
+| Rate limiting persistent | Yes | `PersistentCooldownRateLimiter` unchanged, still the default |
+| CLI and demo behaviour compatible | Yes | `cli.py`, `demo_ui.py` unchanged |
+| States clearly that it does not integrate with Windows sign-in | Yes, and more explicitly | README "Current status"; `docs/ARCHITECTURE.md` "What exists, and what does not" |
+| RGB-camera and liveness limitations prominently documented | Yes | README, `THREAT_MODEL.md` sections 2-4, `SECURITY.md` "Known limitations" |
+
+Verify the no-source-change claim directly:
+
+```
+git diff --stat main...phase-2-security-foundation -- src tests scripts
+```
+
+### Phase 2 requirements
+
+| Requirement | Proof |
+|---|---|
+| Complete architecture and security review | `docs/PHASE2_SECURITY_REVIEW.md` |
+| Credential strategy GO / CONDITIONAL GO / NO-GO | `docs/adr/0001-...` section 10 - **CONDITIONAL GO overall; NO-GO for local accounts and MSA** |
+| Supported and unsupported account types explicit | `docs/adr/0001-...` section 5.1 |
+| Certificate/smart-card feasibility, and what it requires | `docs/adr/0001-...` sections 3 (E3), 5.2, 8 |
+| NGC treated as unproven unless documented | `docs/adr/0001-...` section 3 (E5), section 6.2 - **withdrawn** |
+| Product requirements narrowed to a supported subset | `docs/adr/0001-...` section 5.3 |
+| Session 0 feasibility for the Python pipeline | `docs/adr/0002-...` section 5.2 - **not the shipping boundary; native host recommended** |
+| Camera availability before interactive sign-in | `docs/adr/0002-...` section 3 (E1/E2), **blocker B1** |
+| Camera privacy and consent rules | `docs/adr/0002-...` section 3 (E2) |
+| Device contention and camera ownership | `docs/adr/0002-...` section 5.6 |
+| Service identity and minimum privileges | `docs/adr/0002-...` section 5.3 |
+| Pre-logon availability of enrollment data | `docs/adr/0002-...` section 5.5 - with the protection regression stated plainly |
+| Python/native suitability for the service boundary | `docs/adr/0002-...` section 5.2 |
+| **Secure-preview contradiction resolved** | `docs/adr/0002-...` section 5.4 - **preview removed, status-only UI**; `PHASE2_CREDENTIAL_PROVIDER.md` corrected |
+| Versioned IPC protocol and threat model | `docs/adr/0003-...` sections 5.1-5.7; threat table 5.4 (18 threats) |
+| Protocol never carries frames/embeddings/templates/passwords/certs/keys/TPM secrets/reusable assertions | `docs/adr/0003-...` section 2.1, enforced structurally by the version-1 format; `native/tests/test_protocol.cpp::opaque_fields_are_length_capped` |
+| Result short-lived, single-use, request/identity/nonce/deadline-bound | `docs/adr/0003-...` section 2.2; `successful_result_cannot_be_reused`, `result_never_outlives_its_request`, `result_with_wrong_*` tests |
+| Enrollment, provisioning, revocation, recovery, uninstall | `docs/adr/0004-...` sections 5.1-5.7 |
+| Guaranteed built-in fallback providers | `docs/adr/0004-...` R2 and section 5.5; `docs/adr/0001-...` E2 |
+| Native scaffold, CMake + CTest, x64, modern C++, strict warnings, no third-party runtime deps | `native/CMakeLists.txt`, `native/README.md` |
+| Required native test coverage (17 categories) | `native/README.md` "Test coverage" mapping table |
+| Native build and test instructions | `native/README.md`, `README.md`, `CONTRIBUTING.md` |
+| Microsoft sample provenance/licensing | None used. `native/README.md` "Provenance and licensing" |
+| GitHub Actions: Python 3.12, pytest, Ruff, mypy, native Debug + Release | `.github/workflows/ci.yml` |
+| Dependency and security scanning; CodeQL for Python and C++ | `.github/workflows/ci.yml` (`dependency-review`, `pip-audit`), `.github/workflows/codeql.yml` |
+| Dependabot for Python and GitHub Actions | `.github/dependabot.yml` |
+| Minimum workflow permissions; no secrets in PR workflows | `.github/workflows/README.md` "Permissions and secrets" |
+| SECURITY.md with responsible disclosure + biometric warning | `SECURITY.md` |
+| CONTRIBUTING.md with setup, commands, boundaries, prohibitions, privacy, PR expectations | `CONTRIBUTING.md` |
+| PR template and issue templates | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` |
+| `.gitignore` expanded for build output, binaries, symbols, keys, certs, registry exports, runtime state, biometric data, logs, model weights, IDE files | `.gitignore` |
+| Phase 3 entry criteria defined | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - every criterion, including B4a and B16 |
+
+### What Phase 2 deliberately did NOT do
+
+No `ICredentialProvider` implementation. No COM registration, CLSID, or `.reg`
+file. No credential provider filter. No Windows service, SCM code, or
+installer. No credential serialization - no `KERB_*` structure is constructed
+anywhere. No TPM, NCrypt, CNG, or certificate access. No camera access from
+native code. No registry read or write. No installer or deployment package. No
+change to any Windows authentication, policy, or account setting. No Microsoft
+sample code copied or adapted. No experiment on a real lock screen or secure
+desktop.
+
+Full list with rationale: `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part C. The
+`repo-hygiene` CI job enforces several of these mechanically.
+
+### Toolchain honesty
+
+The development machine has no MSVC, no Windows SDK, and no CMake - verified,
+not assumed (`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part D). **No claim is made
+that the native project was built or tested locally.** GitHub Actions performs
+the x64 Debug and Release build and test on a `windows-latest` runner, and
+those runs are the authoritative native result for this phase.

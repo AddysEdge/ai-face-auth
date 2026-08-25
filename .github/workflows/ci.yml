@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "phase-*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: nothing here needs write access to the repository, and a
+# pull_request workflow must never be able to mutate it. No secrets are used or
+# referenced by any job, so a fork PR cannot exfiltrate anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python 3.12 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the project with its declared dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Model weights are not committed (see .gitignore and
+      # src/faceauth/model_registry.py). The realmodel-marked tests skip
+      # themselves when those files are absent, and the DPAPI tests skip when
+      # pywin32 is unavailable. Neither is silently ignored - both report as
+      # skipped in the run summary.
+      - name: Run pytest
+        run: python -m pytest -q --junitxml=pytest-results.xml
+
+      - name: Run Ruff
+        run: python -m ruff check --no-cache src tests scripts
+
+      - name: Run mypy
+        run: python -m mypy --no-incremental src
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: warn
+
+  native:
+    name: Native x64 ${{ matrix.config }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # windows-latest ships MSVC and CMake. This workflow installs no Visual
+      # Studio components and no system-wide dependencies.
+      - name: Report toolchain
+        shell: pwsh
+        run: cmake --version
+
+      - name: Configure (x64)
+        run: cmake -S native -B native/build -A x64
+
+      - name: Build ${{ matrix.config }}
+        run: cmake --build native/build --config ${{ matrix.config }}
+
+      - name: Test ${{ matrix.config }}
+        run: ctest --test-dir native/build -C ${{ matrix.config }} --output-on-failure
+
+  # Belt-and-braces on top of .gitignore: an ignore rule protects against
+  # accident, this protects against a deliberate `git add -f`.
+  repo-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reject committed binaries, secrets, biometric data, and model weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          patterns='\.(exe|dll|obj|lib|pdb|ilk|onnx|task|tflite|pt|pth|safetensors|pem|key|pfx|p12|cer|crt|der|reg|npy|log|dpapi)$'
+          if git ls-files | grep -Ei "$patterns"; then
+            echo "::error::A file matching a prohibited pattern is tracked in git."
+            exit 1
+          fi
+          if git ls-files | grep -E '^(data|logs)/'; then
+            echo "::error::Runtime data or logs are tracked in git."
+            exit 1
+          fi
+          echo "Repository hygiene check passed."
+
+      - name: Reject Credential Provider registration or credential serialization in code
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Phase 2 must not register a Credential Provider, install a service,
+          # or serialize a Windows credential. These are the concrete API and
+          # registry markers that would show someone crossed that line.
+          # Documentation is excluded because the ADRs quote these names on
+          # purpose; so is this workflow, which necessarily contains them.
+          markers='DllRegisterServer|ICredentialProviderCredential|CredentialProviderFilters|CreateServiceW|CreateServiceA|Security Packages|KERB_INTERACTIVE_LOGON|KERB_CERTIFICATE_LOGON|CryptProtectData.*LOCAL_MACHINE'
+          if git grep -nEI "$markers" -- ':!docs/**' ':!*.md' ':!.github/workflows/**'; then
+            echo "::error::Found a registration or credential-serialization marker outside documentation."
+            exit 1
+          fi
+          echo "No registration or credential-serialization markers in code."
+
+  # THIS JOB NEITHER RUNS NOR BLOCKS TODAY. Two separate things are false, and
+  # conflating them would be misleading:
+  #
+  #   1. It does not RUN. The action needs the repository's Dependency graph
+  #      feature (Settings -> Code security), which is OFF, so it reports
+  #      "not supported on this repository" instead of reviewing anything.
+  #   2. It could not BLOCK even if it ran, because of the
+  #      `continue-on-error: true` below.
+  #
+  # Enabling Dependency graph alone would fix (1) but NOT (2) - making this
+  # enforcing also means deliberately removing `continue-on-error`, in a PR
+  # that says so. Enabling the setting is a repository security change and is
+  # the owner's decision, not something to do silently from CI.
+  #
+  # Until both happen, `pip-audit` below is the dependency scanning that
+  # actually runs and actually blocks. Do not read a green tick on this job as
+  # "dependencies were reviewed" - the step below prints a warning annotation
+  # whenever the review did not run.
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Review dependency changes
+        id: review
+        continue-on-error: true
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+      - name: Report whether the review actually ran
+        shell: bash
+        run: |
+          if [ "${{ steps.review.outcome }}" = "success" ]; then
+            echo "Dependency review ran and found nothing at or above 'high'."
+          else
+            echo "::warning::Dependency review did NOT run. Enable Dependency graph at" \
+                 "https://github.com/${{ github.repository }}/settings/security_analysis" \
+                 "to make it run; removing continue-on-error in ci.yml is a separate" \
+                 "change needed to make it block. pip-audit covers dependency" \
+                 "scanning meanwhile."
+          fi
+
+  pip-audit:
+    name: Python dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Extract the platform-independent dependency set
+        shell: bash
+        run: |
+          python - <<'PY' > audit-requirements.txt
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              data = tomllib.load(handle)
+
+          for spec in data["project"]["dependencies"]:
+              # Windows-only extras cannot be resolved on this runner.
+              if "sys_platform" in spec:
+                  continue
+              print(spec.split(";")[0].strip())
+          for spec in data["project"]["optional-dependencies"]["dev"]:
+              print(spec.split(";")[0].strip())
+          PY
+          cat audit-requirements.txt
+
+      # ENFORCING. `continue-on-error` was removed: an advisory job that
+      # nobody reads is not a security control, and a green tick that ignores a
+      # known CVE is worse than no job at all.
+      #
+      # Severity policy: fail on ANY known vulnerability affecting a declared
+      # dependency. Every dependency here is exactly pinned, so a finding is
+      # always actionable - bump the pin, or record an explicit, justified
+      # `--ignore-vuln` exception in this file with a comment saying why.
+      # There are no ignored advisories today.
+      - name: Run pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit --progress-spinner off -r audit-requirements.txt

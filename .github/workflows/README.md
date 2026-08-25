@@ -11,7 +11,7 @@ demand.
 | `native` | `windows-latest` | Matrix over `Debug` and `Release`. Configures with `-A x64`, builds, and runs the full CTest suite. This is the **authoritative** native result: the development machine has no MSVC or CMake (`docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part D). |
 | `repo-hygiene` | `ubuntu-latest` | Fails if a binary, secret, key, certificate, registry export, model weight, log, or biometric artefact is tracked in git, and fails if a Credential Provider registration, service creation, or credential-serialization marker appears in code. |
 | `dependency-review` | `ubuntu-latest` | Pull requests only. Flags dependency changes with known high-severity advisories. **Currently inert - see below.** |
-| `pip-audit` | `ubuntu-latest` | Audits the platform-independent dependency set. **Advisory** (`continue-on-error`) - a new CVE in a pinned CV/ML dependency should be visible immediately without blocking an unrelated docs change. Read the job output on every PR. |
+| `pip-audit` | `ubuntu-latest` | Audits the platform-independent dependency set. **Enforcing** - it fails the job on any known vulnerability affecting a declared dependency. See "Severity policy" below. |
 
 ### `dependency-review` needs a repository setting that is currently OFF
 
@@ -45,6 +45,31 @@ documentation. Those names are quoted deliberately in the ADRs, so `docs/**`,
 
 If you are legitimately introducing one of these in a later phase, the
 exclusion list is the place to have that conversation - do not delete the job.
+
+### `pip-audit` severity policy
+
+`pip-audit` **fails the job on any known vulnerability** affecting a declared
+dependency. It used to carry `continue-on-error`, which meant a green tick could
+coexist with a live CVE - an advisory job nobody reads is not a security
+control, so that was removed.
+
+Every dependency is exactly pinned in `pyproject.toml`, so a finding is always
+actionable: bump the pin, or add an explicit `--ignore-vuln` exception in
+`ci.yml` **with a comment explaining why it does not apply here**. There are no
+ignored advisories today, and adding one silently is not acceptable.
+
+## Pinned action versions
+
+Every action is pinned to a full commit SHA with a trailing version comment:
+
+```yaml
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+A moving tag like `@v7` can be repointed at new code by whoever controls the
+repository; a SHA cannot. The version comment keeps the pin readable, and
+Dependabot's `github-actions` ecosystem understands this exact form - it bumps
+both the SHA and the comment together, so pinning does not freeze the actions.
 
 ## `codeql.yml`
 

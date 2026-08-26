@@ -414,28 +414,55 @@ expectation mismatch, **2** could not reliably observe.
 
 ### 4.3 How the deadline is actually enforced
 
-One monotonic budget covers the whole run: child startup, imports, model
-initialisation, inference, teardown, the drain, and every PowerShell query.
+**One `Deadline` for the whole command.** It is created once and passed to every
+stage - child startup, imports, model initialisation, inference, teardown, the
+drain, every PowerShell query, DNS inference, and the final classification. It
+is never topped up.
 
-Each query's timeout is `min(POWERSHELL_TIMEOUT_MAX, remaining budget)`, so a
-single query can never outlive the run it belongs to. A poll is not started at
-all with less than `MIN_QUERY_BUDGET` (2s) left, because a query that cannot
-finish would just burn the remainder and report a timeout; the loop stops and
-records that it ran out of time instead.
+Each PowerShell query's timeout is `min(POWERSHELL_TIMEOUT_MAX, remaining)`, and
+a poll is not started at all with less than `MIN_QUERY_BUDGET` (2s) left,
+because a query that cannot finish would just burn the remainder and report a
+timeout. `socket.getaddrinfo` takes no timeout and cannot be cancelled, so
+forward resolution runs it on a daemon thread joined against the remaining
+budget; if it overruns it is abandoned and the address stays unnamed, which
+means undeclared, which fails.
 
-This mattered. An earlier revision passed a fixed 60-second timeout to every
-query regardless of the budget, so a short overall deadline could be overrun by
-up to a minute - the "hard monotonic deadline" was not hard at all. Measured
-after the fix, with the real child and real queries: a 6-second budget finished
-in 4.8s and a 12-second budget in 11.1s, both returning exit 2 for the expired
-deadline. Both finish *under* budget because the loop stops rather than starting
-a query it cannot complete.
+If external connections were observed but too little budget remains to attach a
+DNS candidate to them, the run returns **exit 2** rather than a verdict reached
+on borrowed time.
+
+**Two defects here, both real, both fixed.**
+
+The first: every query was given a fixed 60-second timeout regardless of the
+budget, so a short deadline could be overrun by a full minute. The "hard
+monotonic deadline" was not hard.
+
+The second, found in review after the first was fixed: the deadline covered
+`run_probe` but not the command. `main` built a `Deadline`, started the probe
+with a *separate* one, and then handed the post-probe DNS stage
+`max(MIN_QUERY_BUDGET, remaining)` - topping the budget back up by two seconds
+after it had run out. `--timeout 0.1` therefore granted the DNS stage a fresh
+two seconds and produced a substantive **exit 1** on a budget that was already
+spent. A single shared `Deadline` and the removal of that `max(...)` fix it.
+
+Measured end to end through `main`, with the real child, real queries, and the
+real DNS stage:
+
+| `--timeout` | elapsed | exit |
+|---|---|---|
+| 0.1s | 1.2s | 2 (was: exit 1 on a spent budget) |
+| 6s | 5.4s | 2 - deadline expired |
+| 20s | 15.1s | 0 - completes normally |
+| 40s | 15.6s | 0 - budget is not the binding constraint |
+
+Short budgets finish *under* the deadline because the loop stops rather than
+starting work it cannot complete.
 
 **Honest scope of the bound.** Killing and reaping the child happens after the
 deadline, in cleanup, and is separately bounded by `CHILD_REAP_TIMEOUT` (10s).
 So the wall-clock ceiling for a run is the budget plus normal process-cleanup
-time, not the budget exactly. What is ruled out is the old behaviour of blowing
-past a short budget by a full PowerShell timeout.
+time, not the budget exactly. An abandoned `getaddrinfo` thread may also outlive
+the call, but it is a daemon thread and cannot delay exit.
 
 ### 4.4 What a destination name does and does not mean
 
@@ -515,8 +542,10 @@ prevents the next variant of the same mistake.
   declared hostname accounts for is reported as unresolved and treated as
   undeclared, which fails the check. That is the intended direction to fail in,
   but it does mean a DNS outage surfaces as a failure rather than as a skip.
-- The overall deadline bounds observation, not process cleanup. Killing and
-  reaping the child adds normal cleanup time on top, bounded separately at 10s.
+- The overall deadline bounds the command, not process cleanup. Killing and
+  reaping the child adds normal cleanup time on top, bounded separately at 10s,
+  and an abandoned `getaddrinfo` daemon thread may outlive the call without
+  being able to delay exit.
 
 ---
 

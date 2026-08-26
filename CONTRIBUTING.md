@@ -15,7 +15,7 @@ a net loss.
 | Path | What it is |
 |---|---|
 | `src/faceauth/` | Phase 1: the standalone Python pipeline. Real, working, complete for its scope. |
-| `tests/` | Python test suite (201 tests): the Phase 1 pipeline, plus the OS-level network check. |
+| `tests/` | Python test suite (207 tests): the Phase 1 pipeline, plus the OS-level network check. |
 | `scripts/` | Model fetcher and the live liveness-calibration diagnostic. |
 | `native/` | Phase 2: the inert IPC contract scaffold. **Not** a Credential Provider, **not** a service. |
 | `docs/` | Research, architecture, threat model, Phase 2 review, ADRs. |
@@ -62,7 +62,7 @@ Run all of these before opening a pull request. CI runs exactly the same ones.
 ```
 
 Every existing test must still pass, and any test you add must pass too. The
-suite is 201 tests as of this writing; treat the current count as whatever
+suite is 207 tests as of this writing; treat the current count as whatever
 `pytest --collect-only -q` reports rather than a number copied from here.
 
 If your environment denies pytest access to the system temp directory, redirect

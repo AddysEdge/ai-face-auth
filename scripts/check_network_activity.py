@@ -29,6 +29,11 @@ So:
   expires, the result is exit 2 even when the pid was found, READY was reached,
   the canary was seen, and connections were already observed - because the
   observation was cut short.
+* **One deadline covers the whole command**, not just the probe: child startup,
+  imports, model init, inference, teardown, the drain, every PowerShell query,
+  DNS inference, and classification all spend the same budget. It is never
+  topped up. If too little remains to classify an observed destination, that is
+  exit 2 rather than a verdict reached on borrowed time.
 * **An observer-health canary gates every PASS.** The parent opens a loopback
   listener; the child connects to it and holds the connection. Windows must
   report that connection under the child's self-reported PID. If it cannot, the
@@ -399,7 +404,34 @@ def _dns_cache_reverse(addresses: set[str], timeout: float) -> dict[str, str]:
     return mapping
 
 
-def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]:
+def _bounded_getaddrinfo(hostname: str, timeout: float) -> list | None:
+    """`socket.getaddrinfo` with a hard wall-clock bound.
+
+    `getaddrinfo` takes no timeout and cannot be cancelled, so it runs on a
+    daemon thread that is simply abandoned if it overruns. Abandoning it is safe
+    here: it holds no locks this process needs, and a daemon thread cannot delay
+    interpreter exit. Returns None when the lookup did not finish in time, which
+    leaves the address unnamed - and unnamed is undeclared, which fails.
+    """
+    if timeout <= 0:
+        return None
+    result: list = []
+
+    def work() -> None:
+        with contextlib.suppress(OSError, UnicodeError):
+            result.extend(socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP))
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return None
+    return result
+
+
+def _forward_resolve(
+    hostnames: set[str], addresses: set[str], deadline: Deadline | None = None
+) -> dict[str, str]:
     """Which observed addresses are in a declared hostname's current DNS results.
 
     The cache lookup alone is unreliable: `play.googleapis.com` round-robins
@@ -413,9 +445,14 @@ def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]
     """
     mapping: dict[str, str] = {}
     for hostname in hostnames:
-        try:
-            infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-        except (OSError, UnicodeError):
+        remaining = deadline.remaining() if deadline is not None else POWERSHELL_TIMEOUT_MAX
+        if remaining <= 0:
+            # Out of budget. Every address left over stays unnamed, which means
+            # undeclared, which fails. Omitting the lookup is the fail-closed
+            # direction; inventing time for it is not.
+            break
+        infos = _bounded_getaddrinfo(hostname, remaining)
+        if infos is None:
             continue
         for info in infos:
             address = str(info[4][0])
@@ -427,7 +464,7 @@ def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]
 def dns_inference_for(
     addresses: set[str],
     declared: set[str] | None = None,
-    timeout: float = POWERSHELL_TIMEOUT_MAX,
+    deadline: Deadline | None = None,
 ) -> dict[str, str]:
     """Attach a *candidate* name to each observed address, or leave it unnamed.
 
@@ -439,10 +476,11 @@ def dns_inference_for(
     """
     if not addresses:
         return {}
-    mapping = _dns_cache_reverse(addresses, timeout)
+    budget = deadline.query_timeout() if deadline is not None else POWERSHELL_TIMEOUT_MAX
+    mapping = _dns_cache_reverse(addresses, budget)
     unresolved = addresses - set(mapping)
     if unresolved and declared:
-        mapping.update(_forward_resolve(declared, unresolved))
+        mapping.update(_forward_resolve(declared, unresolved, deadline))
     return mapping
 
 
@@ -468,6 +506,7 @@ def _pump(stream: Any, sink: queue.Queue[str | None]) -> None:
 def watch_child(
     argv_builder: Callable[[int], list[str]],
     *,
+    deadline: Deadline | None = None,
     overall_timeout: float = OVERALL_TIMEOUT,
     drain_seconds: float = DRAIN_SECONDS,
     poll_interval: float = POLL_INTERVAL,
@@ -487,7 +526,11 @@ def watch_child(
     the deadline and is separately bounded by `CHILD_REAP_TIMEOUT`.
     """
     outcome = ProbeOutcome()
-    deadline = Deadline(overall_timeout)
+    # One budget for the whole command. `main` creates it and passes it in so the
+    # probe, the drain, DNS inference, and classification all draw on the same
+    # clock; `overall_timeout` only builds one when a caller has not.
+    if deadline is None:
+        deadline = Deadline(overall_timeout)
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     accepted: socket.socket | None = None
@@ -668,6 +711,7 @@ def decide(
     outcome: ProbeOutcome,
     allowed: list[dict[str, Any]],
     names: dict[str, str],
+    dns_complete: bool = True,
 ) -> Decision:
     """Turn an observation into an exit code. Pure - no I/O, fully testable."""
     notes: list[str] = []
@@ -725,6 +769,19 @@ def decide(
             [
                 "The pid, READY, and the canary may all look healthy, but the run "
                 "was cut short, so the observation is incomplete.",
+                "Raise --timeout if the environment is legitimately slower.",
+            ],
+        )
+
+    if not dns_complete:
+        return Decision(
+            2,
+            "CANNOT OBSERVE: the deadline expired before destinations could be classified",
+            [
+                "External connections were observed but there was no budget left to "
+                "attach a DNS candidate to them.",
+                "Classifying them would mean granting time the deadline no longer "
+                "has, so the run is indeterminate instead.",
                 "Raise --timeout if the environment is legitimately slower.",
             ],
         )
@@ -817,15 +874,27 @@ def main(argv: list[str] | None = None) -> int:
         print("      and no result here should be read as covering it.")
         print("      Run scripts/fetch_models.py for the full check.")
 
-    budget = Deadline(args.timeout)
-    outcome = run_probe(stage, overall_timeout=args.timeout)
+    # One Deadline for the entire command: probe, drain, DNS inference, and
+    # classification all spend the same budget. It is never topped up.
+    deadline = Deadline(args.timeout)
+    outcome = run_probe(stage, deadline=deadline)
     allowed = load_allowlist()
-    names = dns_inference_for(
-        {c.remote_address for c in outcome.external},
-        declared={entry["hostname"] for entry in allowed},
-        timeout=max(MIN_QUERY_BUDGET, budget.query_timeout()),
-    )
-    decision = decide(stage, outcome, allowed, names)
+
+    addresses = {c.remote_address for c in outcome.external}
+    names: dict[str, str] = {}
+    dns_complete = True
+    if addresses:
+        if deadline.remaining() < MIN_QUERY_BUDGET:
+            # Not enough left to ask honestly, and topping the budget up would
+            # make the "one end-to-end deadline" claim false.
+            dns_complete = False
+        else:
+            names = dns_inference_for(
+                addresses,
+                declared={entry["hostname"] for entry in allowed},
+                deadline=deadline,
+            )
+    decision = decide(stage, outcome, allowed, names, dns_complete=dns_complete)
 
     print("\nobserver health:")
     print(f"  child pid                : {outcome.child_pid}")

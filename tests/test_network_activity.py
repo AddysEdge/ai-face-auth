@@ -749,18 +749,19 @@ def test_ready_before_the_deadline_still_cannot_pass_if_the_drain_outlives_it() 
 
 
 @windows_only
-def test_the_real_orchestration_stays_inside_a_short_deadline() -> None:
+def test_the_real_probe_stays_inside_a_short_deadline() -> None:
     """The production child and the real PowerShell query, on a tight budget.
 
-    This is the end-to-end version of the bound: no mocked query, no mocked
-    child. Before the deadline was threaded through, a single query could sit
-    on its fixed 60s timeout and blow straight past a short budget.
+    Covers `run_probe` only; `main` including DNS inference is covered below.
+    Before the deadline was threaded through, a single query could sit on its
+    fixed 60s timeout and blow straight past a short budget.
     """
     budget = 8.0
     started = time.monotonic()
     outcome = check.run_probe("imports", overall_timeout=budget)
     elapsed = time.monotonic() - started
-    assert elapsed < budget + 20, (
+    # Budget + bounded child cleanup, nothing like a 60s query overrun.
+    assert elapsed < budget + check.CHILD_REAP_TIMEOUT, (
         f"a {budget}s budget took {elapsed:.1f}s - the deadline is not bounding "
         "the PowerShell query"
     )
@@ -809,6 +810,134 @@ def test_watch_child_clamps_each_query_timeout_to_the_remaining_budget() -> None
     assert all(t <= check.POWERSHELL_TIMEOUT_MAX for t in seen)
     # Later queries have less budget than earlier ones.
     assert seen[-1] < seen[0]
+
+
+# =============================================== one deadline for the command
+
+
+def test_main_shares_one_deadline_with_the_probe_and_dns_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole command draws on one budget that is never topped up.
+
+    Regression test for a real defect: `main` built a Deadline, then started the
+    probe with a *separate* one, and afterwards handed the DNS stage
+    `max(MIN_QUERY_BUDGET, remaining)`. With `--timeout 0.1` that granted the
+    post-probe stage a fresh 2 seconds and produced a substantive exit 1 on a
+    budget that was already spent.
+    """
+    granted: dict[str, object] = {}
+
+    def spy(addresses, declared=None, deadline=None):
+        granted["called"] = True
+        granted["deadline"] = deadline
+        return {}
+
+    monkeypatch.setattr(check, "dns_inference_for", spy)
+    # An outcome with a real external address, so the DNS stage would run if
+    # anything were willing to give it time.
+    monkeypatch.setattr(
+        check,
+        "run_probe",
+        lambda stage, **kw: check.ProbeOutcome(
+            all_connections={
+                Connection("203.0.113.7", 443),
+                Connection("127.0.0.1", 1),
+            },
+            canary_seen=True,
+            canary_port=1,
+            successful_polls=3,
+            reached_ready=True,
+            child_pid=999,
+        ),
+    )
+
+    assert check.main(["--timeout", "0.1"]) == 2
+    assert "called" not in granted, (
+        "the DNS stage was given time the deadline no longer had"
+    )
+
+
+def test_main_still_classifies_when_the_budget_allows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must not block classification on a normal budget."""
+    seen: dict[str, object] = {}
+
+    def spy(addresses, declared=None, deadline=None):
+        seen["deadline"] = deadline
+        return {"203.0.113.7": "example.test"}
+
+    monkeypatch.setattr(check, "dns_inference_for", spy)
+    monkeypatch.setattr(
+        check,
+        "run_probe",
+        lambda stage, **kw: check.ProbeOutcome(
+            all_connections={
+                Connection("203.0.113.7", 443),
+                Connection("127.0.0.1", 1),
+            },
+            canary_seen=True,
+            canary_port=1,
+            successful_polls=3,
+            reached_ready=True,
+            child_pid=999,
+        ),
+    )
+    # Undeclared host, so this is a real verdict rather than a pass.
+    assert check.main(["--timeout", "120"]) == 1
+    assert isinstance(seen["deadline"], check.Deadline), (
+        "the DNS stage must receive the command's own Deadline"
+    )
+
+
+def test_an_unclassifiable_destination_is_indeterminate_not_a_verdict() -> None:
+    outcome = _healthy(
+        all_connections={Connection("203.0.113.7", 443), Connection("127.0.0.1", 54321)}
+    )
+    decision = check.decide("full", outcome, DECLARED, {}, dns_complete=False)
+    assert decision.exit_code == 2
+    assert "before destinations could be classified" in decision.headline
+
+
+@windows_only
+def test_the_whole_command_stays_inside_a_short_deadline() -> None:
+    """End-to-end: main(), real child, real queries, real DNS stage."""
+    budget = 8.0
+    started = time.monotonic()
+    exit_code = check.main(["--timeout", str(budget)])
+    elapsed = time.monotonic() - started
+    assert elapsed < budget + check.CHILD_REAP_TIMEOUT, (
+        f"a {budget}s budget took {elapsed:.1f}s end to end"
+    )
+    # Too short to finish honestly, so it must refuse rather than guess.
+    assert exit_code == 2
+
+
+def test_forward_resolution_is_bounded_and_fails_closed_when_it_overruns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`getaddrinfo` cannot be cancelled, so an overrun must leave it unnamed."""
+
+    def slow(*_a, **_k):
+        time.sleep(30)
+        return [(None, None, None, "", ("203.0.113.7", 443))]
+
+    monkeypatch.setattr(check.socket, "getaddrinfo", slow)
+    started = time.monotonic()
+    assert check._bounded_getaddrinfo("example.test", 0.5) is None
+    assert time.monotonic() - started < 5
+
+
+def test_forward_resolution_stops_once_the_deadline_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def must_not_run(*_a, **_k):
+        raise AssertionError("a lookup started with no budget left")
+
+    monkeypatch.setattr(check, "_bounded_getaddrinfo", must_not_run)
+    expired = check.Deadline(0.0)
+    assert check._forward_resolve({"a.test"}, {"203.0.113.7"}, expired) == {}
 
 
 # ==================================================== the shipped child source

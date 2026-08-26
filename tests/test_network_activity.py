@@ -6,13 +6,14 @@ The failure this check is most exposed to is not "it reports the wrong host" -
 it is "it observed nothing because it was broken, and printed PASS". So these
 tests exercise the failure modes as hard as the success path: a missing
 PowerShell, a non-zero exit, a timeout, malformed output, a child that dies
-before it is ready, a child that hangs, and an observer that cannot see a
-connection it is holding open itself.
+before it is ready, a child that hangs, a child that cannot be spawned at all,
+an observer that cannot see a connection it is holding open itself, and every
+way a run can lose visibility partway through.
 
 The pure decision logic is tested without any subprocess. The parts that can
-only be proven against the real OS - the loopback health canary, and catching a
-connection that opens and closes while the child is silent - run real child
-processes and really ask Windows.
+only be proven against the real OS - the loopback health canary, catching a
+connection that opens and closes while the child is silent, and the deadline
+actually bounding a real run - use real child processes and really ask Windows.
 """
 
 from __future__ import annotations
@@ -88,6 +89,10 @@ class _FakeCompleted:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def _no_connections(_pid, _timeout=None):
+    return set()
 
 
 # ============================================================== allowlist
@@ -247,64 +252,105 @@ def test_redaction_strips_local_paths() -> None:
     assert str(REPO_ROOT) not in check._redact(f"error at {REPO_ROOT}\\src\\x.py")
 
 
-# ============================================================ dns resolution
+# ============================================ deadline plumbed into the query
 
 
-def test_dns_names_for_returns_empty_without_addresses() -> None:
-    assert check.dns_names_for(set()) == {}
+def test_deadline_query_timeout_is_clamped_to_what_remains() -> None:
+    short = check.Deadline(3.0)
+    assert 0 < short.query_timeout() <= 3.0
+    long_budget = check.Deadline(10_000.0)
+    assert long_budget.query_timeout() == check.POWERSHELL_TIMEOUT_MAX
 
 
-def test_dns_names_for_never_invents_a_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expired_deadline_yields_a_zero_query_timeout() -> None:
+    expired = check.Deadline(0.0)
+    assert expired.expired()
+    assert expired.query_timeout() == 0.0
+
+
+def test_query_connections_passes_its_timeout_through_to_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supplied bound must actually reach subprocess.run, not be dropped."""
+    seen: dict[str, float] = {}
+
+    def capture(*_a, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        return _FakeCompleted(0, "STATUS OK\n")
+
+    monkeypatch.setattr(check.subprocess, "run", capture)
+    check.query_connections(1, 4.25)
+    assert seen["timeout"] == 4.25
+
+
+def test_a_query_with_no_budget_left_fails_instead_of_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def must_not_run(*_a, **_k):
+        raise AssertionError("a query was started with no deadline budget left")
+
+    monkeypatch.setattr(check.subprocess, "run", must_not_run)
+    with pytest.raises(ObserverError) as excinfo:
+        check.query_connections(1, 0.0)
+    assert excinfo.value.kind is ObserverFailure.TIMEOUT
+
+
+# ============================================================ DNS inference
+
+
+def test_dns_inference_returns_empty_without_addresses() -> None:
+    assert check.dns_inference_for(set()) == {}
+
+
+def test_dns_inference_never_invents_a_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         check.subprocess,
         "run",
         lambda *_a, **_k: _FakeCompleted(0, "DNS example.test 10.0.0.1\nSTATUS OK\n"),
     )
-    mapping = check.dns_names_for({"10.0.0.1", "10.0.0.2"})
+    mapping = check.dns_inference_for({"10.0.0.1", "10.0.0.2"})
     assert mapping == {"10.0.0.1": "example.test"}
     assert "10.0.0.2" not in mapping
 
 
 def test_dns_failure_leaves_addresses_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A DNS failure must not launder an unknown host into a pass."""
+    """A DNS failure must not launder an unknown address into a pass."""
     monkeypatch.setattr(
         check.subprocess, "run", lambda *_a, **_k: _FakeCompleted(1, "", "denied")
     )
-    assert check.dns_names_for({"10.0.0.1"}) == {}
+    assert check.dns_inference_for({"10.0.0.1"}) == {}
 
 
 def test_forward_resolution_names_an_address_the_cache_missed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The cache lookup is racy; resolving the declared hostname forward is not.
+    """The cache lookup is unreliable; the declared name's address set helps.
 
     play.googleapis.com round-robins across eight A records, and the cache
     entry for the address a connection actually used can be absent by the time
     the query runs. That produced a false "undeclared destination" about one
     run in six before forward resolution was added.
     """
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
     monkeypatch.setattr(
         check.socket,
         "getaddrinfo",
         lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
     )
-    mapping = check.dns_names_for({"172.217.113.4"}, declared={"play.googleapis.com"})
+    mapping = check.dns_inference_for({"172.217.113.4"}, declared={"play.googleapis.com"})
     assert mapping == {"172.217.113.4": "play.googleapis.com"}
 
 
-def test_forward_resolution_cannot_name_an_address_outside_the_declared_set(
+def test_an_address_outside_every_declared_set_stays_unnamed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """It confirms declared addresses; it can never launder an unknown host."""
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
     monkeypatch.setattr(
         check.socket,
         "getaddrinfo",
         lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
     )
-    mapping = check.dns_names_for({"203.0.113.9"}, declared={"play.googleapis.com"})
-    assert mapping == {}
+    assert check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
 
 
 def test_forward_resolution_failure_leaves_the_address_unresolved(
@@ -313,9 +359,9 @@ def test_forward_resolution_failure_leaves_the_address_unresolved(
     def boom(*_a, **_k):
         raise OSError("dns down")
 
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
     monkeypatch.setattr(check.socket, "getaddrinfo", boom)
-    assert check.dns_names_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
+    assert check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
 
 
 def test_cache_hit_short_circuits_forward_resolution(
@@ -323,16 +369,45 @@ def test_cache_hit_short_circuits_forward_resolution(
 ) -> None:
     """No live lookup happens when the cache already accounts for everything."""
     monkeypatch.setattr(
-        check, "_dns_cache_reverse", lambda _addrs: {"10.0.0.1": "cached.test"}
+        check, "_dns_cache_reverse", lambda _addrs, _t: {"10.0.0.1": "cached.test"}
     )
 
     def must_not_run(*_a, **_k):
         raise AssertionError("forward resolution ran despite a complete cache hit")
 
     monkeypatch.setattr(check.socket, "getaddrinfo", must_not_run)
-    assert check.dns_names_for({"10.0.0.1"}, declared={"x.test"}) == {
+    assert check.dns_inference_for({"10.0.0.1"}, declared={"x.test"}) == {
         "10.0.0.1": "cached.test"
     }
+
+
+def test_a_matched_address_is_recorded_as_a_dns_candidate_not_an_observed_host() -> None:
+    """The evidence boundary, enforced in the data shape.
+
+    A name here means "this IP is in that hostname's DNS results", not "the
+    child was observed contacting that hostname". Anything else sharing the
+    address and port would be indistinguishable, so the field is named for what
+    it is.
+    """
+    outcome = _healthy(
+        all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 54321)}
+    )
+    decision = check.decide(
+        "full", outcome, DECLARED, {"172.217.113.4": "play.googleapis.com"}
+    )
+    assert decision.exit_code == 0
+    assert decision.external == [
+        {"address": "172.217.113.4", "port": 443, "dns_candidate": "play.googleapis.com"}
+    ]
+    assert "hostname" not in decision.external[0]
+
+
+def test_the_check_does_not_claim_to_prove_which_hostname_was_contacted() -> None:
+    """Guards against the stronger claim creeping back into the wording."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "cannot launder an unknown host into a pass" not in source
+    assert "TLS SNI" in source
+    assert "DNS inference" in source or "DNS INFERENCE" in source
 
 
 def test_unresolved_address_is_treated_as_undeclared() -> None:
@@ -342,7 +417,7 @@ def test_unresolved_address_is_treated_as_undeclared() -> None:
     decision = check.decide("full", outcome, DECLARED, names={})  # DNS gave nothing
     assert decision.exit_code == 1
     assert decision.undeclared == [
-        {"address": "172.217.113.4", "port": 443, "hostname": None}
+        {"address": "172.217.113.4", "port": 443, "dns_candidate": None}
     ]
 
 
@@ -352,6 +427,13 @@ def test_unresolved_address_is_treated_as_undeclared() -> None:
 def test_fatal_observer_error_cannot_pass() -> None:
     outcome = _healthy(fatal=(ObserverFailure.QUERY_FAILED, "cmdlet missing"))
     assert check.decide("full", outcome, [], {}).exit_code == 2
+
+
+def test_child_spawn_failure_cannot_pass() -> None:
+    outcome = _healthy(fatal=(ObserverFailure.CHILD_SPAWN_FAILED, "no such interpreter"))
+    decision = check.decide("full", outcome, [], {})
+    assert decision.exit_code == 2
+    assert "could not be started" in decision.headline
 
 
 def test_missing_child_pid_cannot_pass() -> None:
@@ -382,14 +464,51 @@ def test_unseen_canary_cannot_pass_even_with_successful_polls() -> None:
     assert "canary" in decision.headline
 
 
-def test_transient_poll_failures_are_reported_but_do_not_block_a_pass() -> None:
-    outcome = _healthy(
-        all_connections={Connection("127.0.0.1", 54321)},
-        failed_polls=[(ObserverFailure.TIMEOUT, "after 60s")],
-    )
+@pytest.mark.parametrize(
+    "kind",
+    [
+        ObserverFailure.TIMEOUT,
+        ObserverFailure.NONZERO_EXIT,
+        ObserverFailure.MALFORMED_OUTPUT,
+        ObserverFailure.EXECUTABLE_MISSING,
+        ObserverFailure.QUERY_FAILED,
+    ],
+)
+def test_any_failed_poll_makes_the_result_indeterminate(kind) -> None:
+    """A failed poll is an interval nobody watched.
+
+    Successful polls either side of a gap say nothing about the gap, so
+    "some polls succeeded" must never excuse one.
+    """
+    outcome = _healthy(successful_polls=9, failed_polls=[(kind, "detail")])
     decision = check.decide("imports", outcome, [], {})
-    assert decision.exit_code == 0
-    assert any("polls failed" in note for note in decision.notes)
+    assert decision.exit_code == 2
+    assert "unwatched interval" in decision.headline
+
+
+def test_a_failed_poll_outranks_an_otherwise_clean_full_run() -> None:
+    """Even with the declared endpoint seen, a gap is still indeterminate."""
+    outcome = _healthy(
+        all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 54321)},
+        failed_polls=[(ObserverFailure.TIMEOUT, "after 4.0s")],
+    )
+    decision = check.decide(
+        "full", outcome, DECLARED, {"172.217.113.4": "play.googleapis.com"}
+    )
+    assert decision.exit_code == 2
+
+
+def test_timed_out_cannot_pass_even_when_everything_else_looks_healthy() -> None:
+    """pid found, READY reached, canary seen, traffic observed - still exit 2."""
+    outcome = _healthy(
+        timed_out=True,
+        all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 54321)},
+    )
+    decision = check.decide(
+        "full", outcome, DECLARED, {"172.217.113.4": "play.googleapis.com"}
+    )
+    assert decision.exit_code == 2
+    assert "deadline expired" in decision.headline
 
 
 # ================================================ decision: outbound verdicts
@@ -401,7 +520,7 @@ def test_undeclared_destination_returns_one() -> None:
     )
     decision = check.decide("full", outcome, DECLARED, {"203.0.113.9": "evil.test"})
     assert decision.exit_code == 1
-    assert decision.undeclared[0]["hostname"] == "evil.test"
+    assert decision.undeclared[0]["dns_candidate"] == "evil.test"
 
 
 def test_declared_destination_observed_passes() -> None:
@@ -478,8 +597,11 @@ def test_watch_child_observes_the_loopback_health_canary() -> None:
     assert outcome.child_pid is not None
     assert outcome.reached_ready
     assert outcome.successful_polls > 0
+    assert not outcome.failed_polls
+    assert not outcome.timed_out
     assert outcome.canary_seen, f"canary not seen; log={outcome.log}"
     assert outcome.external == set()
+    assert check.decide("imports", outcome, [], {}).exit_code == 0
 
 
 @windows_only
@@ -557,9 +679,7 @@ def test_a_transient_connection_is_seen_while_the_child_is_silent() -> None:
 
 
 @windows_only
-def test_child_failing_before_ready_is_detected_with_stderr(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_child_failing_before_ready_is_detected_with_stderr() -> None:
     body = (
         'sys.stderr.write("child blew up\\n")\nsys.stderr.flush()\nraise SystemExit(3)\n'
     )
@@ -568,7 +688,7 @@ def test_child_failing_before_ready_is_detected_with_stderr(
         overall_timeout=60,
         drain_seconds=0.5,
         poll_interval=0.05,
-        connection_query=lambda _pid: set(),
+        connection_query=_no_connections,
     )
     assert not outcome.reached_ready
     assert outcome.child_returncode == 3
@@ -577,7 +697,22 @@ def test_child_failing_before_ready_is_detected_with_stderr(
 
 
 @windows_only
-def test_a_hung_child_is_bounded_by_the_overall_timeout() -> None:
+def test_a_child_that_cannot_be_spawned_is_a_controlled_exit_two() -> None:
+    """A bad interpreter path must not surface as a traceback."""
+    outcome = check.watch_child(
+        lambda port: [str(REPO_ROOT / "no-such-interpreter.exe"), str(port)],
+        overall_timeout=30,
+        drain_seconds=0.5,
+        poll_interval=0.05,
+        connection_query=_no_connections,
+    )
+    assert outcome.fatal is not None
+    assert outcome.fatal[0] is ObserverFailure.CHILD_SPAWN_FAILED
+    assert check.decide("imports", outcome, [], {}).exit_code == 2
+
+
+@windows_only
+def test_a_hung_child_is_bounded_by_the_overall_deadline() -> None:
     """A child that never becomes ready must not hang the check."""
     body = "time.sleep(600)\n"
     started = time.monotonic()
@@ -586,20 +721,57 @@ def test_a_hung_child_is_bounded_by_the_overall_timeout() -> None:
         overall_timeout=6.0,
         drain_seconds=1.0,
         poll_interval=0.05,
-        connection_query=lambda _pid: set(),
+        connection_query=_no_connections,
     )
     elapsed = time.monotonic() - started
     assert outcome.timed_out
     assert not outcome.reached_ready
-    assert elapsed < 60, f"overall timeout was not enforced (took {elapsed:.1f}s)"
+    assert elapsed < 40, f"overall deadline was not enforced (took {elapsed:.1f}s)"
     assert check.decide("imports", outcome, [], {}).exit_code == 2
+
+
+@windows_only
+def test_ready_before_the_deadline_still_cannot_pass_if_the_drain_outlives_it() -> None:
+    """READY is not enough: the observation window itself has to complete."""
+    body = _CONNECT_CANARY + 'print("READY", flush=True)\ntime.sleep(120)\n'
+    started = time.monotonic()
+    outcome = check.watch_child(
+        lambda port: [sys.executable, "-c", _child(body), str(port)],
+        overall_timeout=8.0,
+        drain_seconds=120.0,  # deliberately outlives the overall deadline
+        poll_interval=0.05,
+    )
+    elapsed = time.monotonic() - started
+    assert outcome.reached_ready
+    assert outcome.timed_out
+    assert elapsed < 45, f"deadline not enforced during drain (took {elapsed:.1f}s)"
+    assert check.decide("imports", outcome, [], {}).exit_code == 2
+
+
+@windows_only
+def test_the_real_orchestration_stays_inside_a_short_deadline() -> None:
+    """The production child and the real PowerShell query, on a tight budget.
+
+    This is the end-to-end version of the bound: no mocked query, no mocked
+    child. Before the deadline was threaded through, a single query could sit
+    on its fixed 60s timeout and blow straight past a short budget.
+    """
+    budget = 8.0
+    started = time.monotonic()
+    outcome = check.run_probe("imports", overall_timeout=budget)
+    elapsed = time.monotonic() - started
+    assert elapsed < budget + 20, (
+        f"a {budget}s budget took {elapsed:.1f}s - the deadline is not bounding "
+        "the PowerShell query"
+    )
+    assert outcome.timed_out or outcome.reached_ready
 
 
 @windows_only
 def test_a_fatal_observer_error_stops_the_watch_immediately() -> None:
     """A missing cmdlet must abort, not spin pretending to watch."""
 
-    def always_fails(_pid: int) -> set:
+    def always_fails(_pid, _timeout=None):
         raise ObserverError(ObserverFailure.QUERY_FAILED, "cmdlet missing")
 
     body = _CONNECT_CANARY + 'print("READY", flush=True)\ntime.sleep(30)\n'
@@ -613,6 +785,30 @@ def test_a_fatal_observer_error_stops_the_watch_immediately() -> None:
     assert outcome.fatal is not None
     assert outcome.successful_polls == 0
     assert check.decide("imports", outcome, [], {}).exit_code == 2
+
+
+@windows_only
+def test_watch_child_clamps_each_query_timeout_to_the_remaining_budget() -> None:
+    """The bound must reach the query, not just the loop that calls it."""
+    seen: list[float] = []
+
+    def record(_pid, timeout):
+        seen.append(timeout)
+        return set()
+
+    body = _CONNECT_CANARY + 'print("READY", flush=True)\ntime.sleep(30)\n'
+    check.watch_child(
+        lambda port: [sys.executable, "-c", _child(body), str(port)],
+        overall_timeout=10.0,
+        drain_seconds=1.0,
+        poll_interval=0.05,
+        connection_query=record,
+    )
+    assert seen, "no query was ever attempted"
+    assert all(t <= 10.0 for t in seen), f"a query outlived the budget: {seen}"
+    assert all(t <= check.POWERSHELL_TIMEOUT_MAX for t in seen)
+    # Later queries have less budget than earlier ones.
+    assert seen[-1] < seen[0]
 
 
 # ==================================================== the shipped child source
@@ -661,9 +857,9 @@ def test_child_source_does_not_claim_a_dwell_threshold() -> None:
 def test_check_runs_and_reports_only_declared_destinations() -> None:
     """Slow: runs the real probe against the real dependency stack.
 
-    Asserts the check passes, that it proved observer health, and that it
-    actually saw the declared endpoint - so a blind check cannot masquerade as
-    a clean result.
+    Asserts the check passes, that it proved observer health, that it lost no
+    observation window, and that it actually saw the declared endpoint - so a
+    blind check cannot masquerade as a clean result.
     """
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--json"],
@@ -682,8 +878,13 @@ def test_check_runs_and_reports_only_declared_destinations() -> None:
     assert payload["exit_code"] == 0
     assert payload["observer"]["canary_seen"] is True, "observer health not proven"
     assert payload["observer"]["successful_polls"] > 0
+    assert payload["observer"]["failed_polls"] == []
+    assert payload["observer"]["timed_out"] is False
     assert payload["undeclared"] == []
     assert payload["missing_expected"] == []
-    assert [(e["hostname"], e["port"]) for e in payload["external"]] == [
+    assert [(e["dns_candidate"], e["port"]) for e in payload["external"]] == [
         ("play.googleapis.com", 443)
     ]
+    # The output must not overstate what a name means.
+    assert payload["name_attribution"] == "dns-inference-only; not observed SNI"
+    assert "DNS INFERENCE" in completed.stdout

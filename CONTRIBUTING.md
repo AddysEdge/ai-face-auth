@@ -15,7 +15,7 @@ a net loss.
 | Path | What it is |
 |---|---|
 | `src/faceauth/` | Phase 1: the standalone Python pipeline. Real, working, complete for its scope. |
-| `tests/` | Phase 1 test suite (137 tests). |
+| `tests/` | Python test suite (180 tests): the Phase 1 pipeline, plus the OS-level network check. |
 | `scripts/` | Model fetcher and the live liveness-calibration diagnostic. |
 | `native/` | Phase 2: the inert IPC contract scaffold. **Not** a Credential Provider, **not** a service. |
 | `docs/` | Research, architecture, threat model, Phase 2 review, ADRs. |
@@ -61,7 +61,9 @@ Run all of these before opening a pull request. CI runs exactly the same ones.
 .venv\Scripts\mypy.exe --no-incremental src
 ```
 
-All 137 existing tests must still pass, and any test you add must pass too.
+Every existing test must still pass, and any test you add must pass too. The
+suite is 180 tests as of this writing; treat the current count as whatever
+`pytest --collect-only -q` reports rather than a number copied from here.
 
 If your environment denies pytest access to the system temp directory, redirect
 it into the repository (`.pytest_tmp/` is gitignored):
@@ -153,7 +155,7 @@ deliver, which would be its own kind of dishonesty.
 
 These are **blocked today** and will stay blocked until the Phase 3 entry
 criteria in `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - **every criterion,
-including B4a and B16** - pass and the repository owner records explicit
+including B4a, B16, and B17** - pass and the repository owner records explicit
 written approval:
 
 - Implementing `ICredentialProvider` / `ICredentialProviderCredential2`.
@@ -175,7 +177,7 @@ backstop, not the boundary.
 
 Phase 3 is not forbidden forever - it is **not authorized yet**. To propose it:
 
-1. Confirm **every Part B entry criterion, including B4a and B16**, in
+1. Confirm **every Part B entry criterion, including B4a, B16, and B17**, in
    `docs/PHASE2_ACCEPTANCE_CRITERIA.md` has evidence, and link that evidence.
    The list is not a contiguous range - do not write "B1-B15" and assume it
    covers everything.
@@ -188,7 +190,13 @@ Phase 3 is not forbidden forever - it is **not authorized yet**. To propose it:
 5. Link the strong-certificate-binding verification against a Full Enforcement
    domain controller (**B4a**), and the cancellable-backend design if
    in-flight cancellation is in scope (**B16**).
-5. Use the **Phase 3 (gated)** option in the pull-request template and complete
+6. Link the evidence that the verification path makes **no outbound network
+   connections** (**B17**): ADR-0005 accepted with Option A or B implemented,
+   and `scripts/check_network_activity.py` showing zero external endpoints
+   against an empty `scripts/network_allowlist.json`. A firewall rule or a
+   hosts-file entry does not count - the requirement is a property of the
+   software, not of the machine it happens to run on.
+7. Use the **Phase 3 (gated)** option in the pull-request template and complete
    its extra checklist instead of the Phase 2 boundary checklist.
 
 **Changing the `repo-hygiene` guard is itself gated.** It may only be relaxed

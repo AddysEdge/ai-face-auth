@@ -134,9 +134,16 @@ commitment is absolute and appears in the never-do list below.
 binary opens a TLS connection to `play.googleapis.com` and uploads usage
 telemetry - MediaPipe version, platform, solution name, graph name, latency and
 invocation counts - when a MediaPipe session is torn down. This is documented,
-intended upstream behaviour with **no supported opt-out**; it is not a
-compromise and not something this project chose. It predates any dependency
-bump here and was simply not noticed.
+intended upstream behaviour with **no supported opt-out**; it is not something
+this project chose. It predates any dependency bump here and was simply not
+noticed.
+
+What the evidence covers, stated precisely: the **MediaPipe telemetry extension
+schema** was extracted from the shipped binary and contains no field that could
+carry biometric content. The broader assurance that input data is never sent is
+[Google's statement](https://github.com/google-ai-edge/mediapipe/issues/6291#issuecomment-4896121772), also in the [MediaPipe Terms of Service](https://developers.google.com/edge/mediapipe/legal/tos) - not something binary inspection can prove. The Clearcut envelope
+carrying the extension was **not** decrypted, so any identifiers it may add are
+uncharacterised, and nothing here establishes that the telemetry is anonymous.
 
 The full measurement - destination, trigger, exact transmitted schema, retry
 behaviour, and the opt-out search - is in
@@ -148,8 +155,14 @@ narrow the offline claim is
 fails if any destination outside
 [`scripts/network_allowlist.json`](scripts/network_allowlist.json) appears.
 
-**This is not a vulnerability, and does not need reporting.** A *new* outbound
-destination, or any transmission of biometric data, absolutely does.
+**Please do report anything that does not match the audit.** The known,
+documented telemetry described above is not currently being treated as a
+compromise, so it does not need re-reporting on its own. But an unexpected
+payload, an identifier or destination the audit does not describe, any
+transmission of biometric data, or any behaviour inconsistent with
+`docs/PRIVACY_NETWORK_AUDIT.md` should be reported through the process at the
+top of this file. The envelope contents were never fully characterised, so
+evidence about them is genuinely useful rather than a duplicate.
 
 ## What this project will never do
 

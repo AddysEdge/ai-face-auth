@@ -115,7 +115,10 @@ per session regardless of how much work the session did.
 
 Extracted from the protobuf descriptors embedded in `libmediapipe.dll`
 (`third_party/mediapipe/util/analytics/mediapipe_log_extension.proto` and
-`mediapipe_logging_enums.proto`). This is the **complete** message schema:
+`mediapipe_logging_enums.proto`). This is the **complete MediaPipe telemetry
+extension schema**. It is *not* the complete TLS payload: the extension is
+carried inside a Clearcut envelope that was not decrypted (see the limitation
+immediately after the schema).
 
 ```
 MediaPipeLogExtension
@@ -143,10 +146,17 @@ For this project that resolves to, per session: platform Windows, host
 environment Python, the MediaPipe version, `TASKS_FACELANDMARKER`, the graph
 name, init latency, invocation count, and latency statistics.
 
-**There is no field in this schema for image data, video frames, landmarks,
-blendshapes, embeddings, or any biometric content.** Google states the same in
-its Terms of Service (section 2.1 below) and the maintainer restated it on the
-record (section 2.2). The schema is consistent with both statements.
+**No field exists in this extracted MediaPipe extension for image data, video
+frames, landmarks, blendshapes, embeddings, or any biometric content.** That is
+what the binary evidence establishes, and it is the limit of what it
+establishes.
+
+The broader conclusion - that input data is not sent to Google at all - is
+**Google's statement, not this audit's finding**. It rests on the maintainer's
+reply on the record ([mediapipe#6291](https://github.com/google-ai-edge/mediapipe/issues/6291#issuecomment-4896121772)) and on the [MediaPipe Terms of Service](https://developers.google.com/edge/mediapipe/legal/tos). Binary inspection cannot prove what an encrypted payload contains; it
+can only show that the schema the extension is built from has nowhere to put
+biometric content. The two agree, which is worth something - but they are
+different kinds of evidence and are not merged here.
 
 **Identifiers - stated precisely.** The MediaPipe extension carries `app_id`
 and version strings. It does **not** carry a username, machine name, or a
@@ -157,7 +167,11 @@ links Clearcut's compliance/identity protos, including a
 client or device identifier was not determined**, because doing so would
 require decrypting TLS, which was out of scope for this audit and would have
 required installing a certificate. This limit is stated rather than papered
-over: the payload schema above is proven; the envelope contents are not.
+over: the extension schema above is proven; the envelope contents are not.
+
+**Nothing here establishes that the telemetry is anonymous**, and this audit
+does not claim it is. `app_id` plus version and platform strings is not a
+person, but it is not nothing either, and the envelope was not characterised.
 
 ### 1.4 Frequency, persistence, and retry
 
@@ -227,14 +241,13 @@ is that it happens at all.
 "Mediapipe now includes undocumented telemetry" (opened 2026-05-07, closed as
 completed 2026-07-06). MediaPipe maintainer `schmidt-sebastian`, 2026-07-06:
 
-> "Unfortunately, we will be rolling out telemetry for all of our platforms. We
-> always included this via our Terms of Service [...], which we are/will make
-> more prominent. [...] **We are not adding an official API to disable this
-> data collection**, as this will skew with out data and make it impossible to
-> use this data and not allow us to correctly make decisions on what areas our
-> team should focus on. **You can build the SDK from source, which will not
-> include telemetry, or you can block access to the host.** We will not and
-> will never send any input data to our servers."
+> "We are not adding an official API to disable this data collection [...] You
+> can build the SDK from source, which will not include telemetry, or you can
+> block access to the host."
+
+The same reply states that Google will never send input data to its servers,
+and gives the Terms of Service as where the collection was always disclosed.
+([Permalink to the comment](https://github.com/google-ai-edge/mediapipe/issues/6291#issuecomment-4896121772).)
 
 That is the definitive answer to "is there an officially supported opt-out":
 there is not, by deliberate upstream policy.
@@ -306,6 +319,7 @@ The replacement wording used throughout is deliberately uniform:
 | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` | New Phase 3 entry criterion **B17**, and the identifier list updated to include it |
 | `docs/PHASE2_SECURITY_REVIEW.md` section 3.4 | The "no network access" requirement is restated as unchanged **and** flagged as a blocker the current dependency set cannot meet |
 | `docs/adr/0002-...md` section 5.3 | The "Network: None. Deny all outbound." row now points at B17 |
+| `README.md`, `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `docs/ACCEPTANCE_AUDIT.md` | Every current-facing Phase 3 gate reference now reads *"every Part B entry criterion, including B4a, B16, and B17"*. Statements that `B1-B15` omits "two" criteria corrected to three. Explicitly historical Phase 2 records were left as they are. |
 
 ### 3.4 What was deliberately left alone
 
@@ -327,60 +341,118 @@ rejection is now argued on the grounds that actually apply.
 `scripts/check_network_activity.py`, driven by `tests/test_network_activity.py`,
 exists so this cannot silently regress or silently worsen.
 
-**How it works.** It launches a child Python process that exercises the
-project's import surface and - when model weights are present - a real
-MediaPipe session including teardown. The **parent** polls
-`Get-NetTCPConnection -OwningProcess <child pid>` and records every outbound
-TCP endpoint the child owns, resolving each remote IP back to a hostname via
-the read-only DNS cache. It then compares the observed set against a declared
-allowlist in `scripts/network_allowlist.json`.
-
-**What it catches.** Any outbound connection to a destination that is not
-already declared and justified - a new telemetry endpoint in any dependency, a
-new phone-home in an updated wheel, or an endpoint appearing at a stage where
-none was expected. It fails in that case.
-
 **Why OS-level.** As established in section 1.5, Python socket interception
-cannot see this connection at all. A check built on `socket` patching would
-have passed cleanly for the entire life of this defect - and did.
+cannot see this connection at all. A check built on `socket` patching would have
+passed cleanly for the entire life of this defect - and did.
 
-**One trap worth recording, because it silently defeats this whole approach.**
+### 4.1 How it works
+
+A child process exercises the project's import surface and - when model weights
+are present - a real MediaPipe session including teardown. The **parent** asks
+Windows which TCP connections that child owns, resolves each remote address to
+a hostname via the read-only DNS cache, and compares the result against
+`scripts/network_allowlist.json`.
+
+Child stdout and stderr are drained by reader threads while the parent polls on
+its **own cadence**, under a single monotonic deadline. Polling is therefore not
+driven by child output: a connection that opens and closes while the child is
+silent is still seen, and a hung import, model initialisation, teardown, or
+reader cannot hang the check. Cleanup always kills and reaps the child and
+closes the sockets.
+
+### 4.2 Why it cannot pass vacuously
+
+The dangerous failure of a check like this is not a wrong answer - it is a
+confident PASS from an observer that saw nothing because it was broken. Three
+things prevent that.
+
+**Every OS query is checked, and failure is never silence.** A missing
+PowerShell executable, a non-zero exit, a timeout, a cmdlet-reported error, and
+output lacking the success sentinel are five distinct outcomes, none of which
+can become "no connections". Queries run under `-ErrorAction Stop` inside a
+try/catch that emits `STATUS OK` or `STATUS ERR`, so the query separately
+reports whether it itself succeeded. The whole connection table is fetched and
+filtered on `OwningProcess`, because passing `-OwningProcess` directly throws
+`ObjectNotFound` when a process owns no connections - which would make "zero
+connections" indistinguishable from "the query failed".
+
+**An independent health canary must be observed before any PASS.** The parent
+opens a loopback listener; the child connects to it and holds the connection
+open for the whole run. Windows must report that connection under the child's
+self-reported PID. If it does not, the observer is not proven to work and the
+check exits 2 regardless of what else it saw. The canary needs no external
+service and changes no system configuration, it is evaluated separately from
+outbound destinations, and loopback can never enter the external allowlist.
+
+**A declared endpoint that goes missing is not a pass.** In FULL mode the
+allowlist is an *expectation*, not merely a permission list: the probe drives
+the exact sequence known to trigger the declared upload, so not observing it is
+indeterminate and reported as such. When the dependency is eventually removed
+and the allowlist is intentionally empty, zero external endpoints pass - because
+the canary proves observer health independently of whether any external traffic
+exists at all.
+
+Exit codes: **0** clean, **1** an undeclared destination or a FULL-mode
+expectation mismatch, **2** could not reliably observe.
+
+### 4.3 The trap that defeated the first version
+
 The parent must poll the child's *real* PID, which is not necessarily
 `Popen.pid`. Several virtualenv layouts - `uv`-created environments among them -
 install a trampoline `python.exe` that launches the actual interpreter as a
 *separate process*. `Popen.pid` is then the stub, which owns no sockets, so the
 poll returns nothing and the check reports a clean PASS while the connection is
-happening in plain sight. The first working version of this check did exactly
-that. The child therefore prints `PID <os.getpid()>` as its first line and the
-parent polls that, and the check reports whether it observed any traffic at all
-so a vacuous pass is visible rather than reassuring.
+happening in plain sight. **The first working version of this check did exactly
+that.** The child now prints `PID <os.getpid()>` as its first line and the
+parent polls that.
 
-**Honest limits, stated up front:**
+That failure is also why the canary exists. Polling the right PID fixed the
+symptom; only an independent proof that the observer can see *something*
+prevents the next variant of the same mistake.
+
+### 4.4 Honest limits, stated up front
 
 - It observes **TCP connection endpoints**, not payloads. It proves *where*
   traffic goes, never *what* is in it.
 - It is **Windows-only**, because it depends on `Get-NetTCPConnection`.
 - In CI, model weights are deliberately not committed, so the MediaPipe session
-  stage is skipped and only the **import surface** is exercised. That is still
-  a genuine regression check - a dependency that phones home on import fails it
-  - but it does **not** cover the session-teardown upload in CI. The full check
-  runs locally where weights are present, and the check reports which mode it
-  ran in rather than claiming a stronger result than it earned.
-- A connection racing the poll interval could in principle be missed. The check
+  stage is skipped and only the **import surface** is exercised. That is still a
+  genuine regression check - a dependency that phones home on import fails it -
+  but it does **not** cover the session-teardown upload, and no CI result should
+  be read as covering it. The full check runs locally where weights are present,
+  and the check prints which mode it ran in rather than claiming a stronger
+  result than it earned. Observer health is proven in both modes.
+- A connection shorter than the poll interval could still be missed. The check
   polls continuously rather than sampling once, but it is a detector, not a
   proof of absence.
 
 ---
 
-## 5. Open decision
+## 5. The interim state, and the decision that is still open
 
-Not decided in this change. See
-[ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md), which lays
-out the viable options - replace MediaPipe, build MediaPipe from source without
-telemetry, or narrow the product's offline requirement to Phase 1 only - with
-the cost and the consequence of each. It is recorded as **Proposed / open**
-and tracked in [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6);
-Phase 3 cannot start while it is unresolved.
+These are two different things, and this report keeps them apart.
+
+**The interim state - already applied, and mandatory.** Every false claim is
+retracted and the actual behaviour is documented. This was never contingent on
+the decision below, and it is **not a fix**: it makes the documentation true,
+it does not change what the software does. It does **not** clear B17.
+
+**The Phase 3 resolution - open.** Making the verification path genuinely
+network-silent requires one of two options, and neither has been selected:
+
+- **Option A - replace MediaPipe.** Costs a reimplementation of the liveness
+  path plus the security evaluation that a spoof-resistance control needs.
+- **Option B - build MediaPipe from source without telemetry.** Keeps liveness
+  quality unchanged. Costs Bazel build complexity, provenance and
+  reproducibility work, maintenance across upstream releases, and a recurring
+  obligation to re-verify telemetry absence on every rebuild.
+
+Both can make the software network-silent; neither is disqualified in
+principle. The trade-off, and a recommendation that is deliberately not applied,
+are in [ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md),
+recorded as **Proposed / open** and tracked in
+[issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6). Phase 3 cannot
+start while it is unresolved.
 
 ---
 

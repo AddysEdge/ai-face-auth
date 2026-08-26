@@ -299,7 +299,9 @@ def test_a_query_with_no_budget_left_fails_instead_of_running(
 
 
 def test_dns_inference_returns_empty_without_addresses() -> None:
-    assert check.dns_inference_for(set()) == {}
+    result = check.dns_inference_for(set())
+    assert result.names == {}
+    assert result.complete is True
 
 
 def test_dns_inference_never_invents_a_name(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,17 +310,27 @@ def test_dns_inference_never_invents_a_name(monkeypatch: pytest.MonkeyPatch) -> 
         "run",
         lambda *_a, **_k: _FakeCompleted(0, "DNS example.test 10.0.0.1\nSTATUS OK\n"),
     )
-    mapping = check.dns_inference_for({"10.0.0.1", "10.0.0.2"})
-    assert mapping == {"10.0.0.1": "example.test"}
-    assert "10.0.0.2" not in mapping
+    result = check.dns_inference_for({"10.0.0.1", "10.0.0.2"})
+    assert result.names == {"10.0.0.1": "example.test"}
+    assert "10.0.0.2" not in result.names
+    assert result.complete is True
 
 
-def test_dns_failure_leaves_addresses_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A DNS failure must not launder an unknown address into a pass."""
+def test_reverse_dns_failure_is_reported_as_incomplete_not_as_knowing_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two must stay distinguishable.
+
+    "The cache knew nothing" and "the lookup failed" both produce an empty
+    mapping. Only the second means the run cannot be classified.
+    """
     monkeypatch.setattr(
         check.subprocess, "run", lambda *_a, **_k: _FakeCompleted(1, "", "denied")
     )
-    assert check.dns_inference_for({"10.0.0.1"}) == {}
+    result = check.dns_inference_for({"10.0.0.1"})
+    assert result.names == {}
+    assert result.complete is False
+    assert result.reason and "reverse DNS" in result.reason
 
 
 def test_forward_resolution_names_an_address_the_cache_missed(
@@ -331,37 +343,49 @@ def test_forward_resolution_names_an_address_the_cache_missed(
     the query runs. That produced a false "undeclared destination" about one
     run in six before forward resolution was added.
     """
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: ({}, None))
     monkeypatch.setattr(
         check.socket,
         "getaddrinfo",
         lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
     )
-    mapping = check.dns_inference_for({"172.217.113.4"}, declared={"play.googleapis.com"})
-    assert mapping == {"172.217.113.4": "play.googleapis.com"}
+    result = check.dns_inference_for({"172.217.113.4"}, declared={"play.googleapis.com"})
+    assert result.names == {"172.217.113.4": "play.googleapis.com"}
+    assert result.complete is True
 
 
 def test_an_address_outside_every_declared_set_stays_unnamed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: ({}, None))
     monkeypatch.setattr(
         check.socket,
         "getaddrinfo",
         lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
     )
-    assert check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
+    result = check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"})
+    assert result.names == {}
+    # The lookup finished; it simply did not match. That is a real answer.
+    assert result.complete is True
 
 
-def test_forward_resolution_failure_leaves_the_address_unresolved(
+def test_forward_resolution_failure_is_incomplete_not_an_undeclared_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """If the declared name cannot be resolved, nothing can be attributed.
+
+    "Cannot attribute" is a different claim from "not declared", and only the
+    second is a verdict. This must not become exit 1.
+    """
+
     def boom(*_a, **_k):
         raise OSError("dns down")
 
-    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: {})
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs, _t: ({}, None))
     monkeypatch.setattr(check.socket, "getaddrinfo", boom)
-    assert check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
+    result = check.dns_inference_for({"203.0.113.9"}, declared={"play.googleapis.com"})
+    assert result.names == {}
+    assert result.complete is False
 
 
 def test_cache_hit_short_circuits_forward_resolution(
@@ -369,16 +393,16 @@ def test_cache_hit_short_circuits_forward_resolution(
 ) -> None:
     """No live lookup happens when the cache already accounts for everything."""
     monkeypatch.setattr(
-        check, "_dns_cache_reverse", lambda _addrs, _t: {"10.0.0.1": "cached.test"}
+        check, "_dns_cache_reverse", lambda _addrs, _t: ({"10.0.0.1": "cached.test"}, None)
     )
 
     def must_not_run(*_a, **_k):
         raise AssertionError("forward resolution ran despite a complete cache hit")
 
     monkeypatch.setattr(check.socket, "getaddrinfo", must_not_run)
-    assert check.dns_inference_for({"10.0.0.1"}, declared={"x.test"}) == {
-        "10.0.0.1": "cached.test"
-    }
+    result = check.dns_inference_for({"10.0.0.1"}, declared={"x.test"})
+    assert result.names == {"10.0.0.1": "cached.test"}
+    assert result.complete is True
 
 
 def test_a_matched_address_is_recorded_as_a_dns_candidate_not_an_observed_host() -> None:
@@ -831,7 +855,7 @@ def test_main_shares_one_deadline_with_the_probe_and_dns_stage(
     def spy(addresses, declared=None, deadline=None):
         granted["called"] = True
         granted["deadline"] = deadline
-        return {}
+        return check.DnsInference({}, complete=True)
 
     monkeypatch.setattr(check, "dns_inference_for", spy)
     # An outcome with a real external address, so the DNS stage would run if
@@ -866,7 +890,7 @@ def test_main_still_classifies_when_the_budget_allows_it(
 
     def spy(addresses, declared=None, deadline=None):
         seen["deadline"] = deadline
-        return {"203.0.113.7": "example.test"}
+        return check.DnsInference({"203.0.113.7": "example.test"}, complete=True)
 
     monkeypatch.setattr(check, "dns_inference_for", spy)
     monkeypatch.setattr(
@@ -897,7 +921,7 @@ def test_an_unclassifiable_destination_is_indeterminate_not_a_verdict() -> None:
     )
     decision = check.decide("full", outcome, DECLARED, {}, dns_complete=False)
     assert decision.exit_code == 2
-    assert "before destinations could be classified" in decision.headline
+    assert "could not be classified within the deadline" in decision.headline
 
 
 @windows_only
@@ -925,7 +949,9 @@ def test_forward_resolution_is_bounded_and_fails_closed_when_it_overruns(
 
     monkeypatch.setattr(check.socket, "getaddrinfo", slow)
     started = time.monotonic()
-    assert check._bounded_getaddrinfo("example.test", 0.5) is None
+    infos, reason = check._bounded_getaddrinfo("example.test", 0.5)
+    assert infos is None
+    assert reason and "budget" in reason
     assert time.monotonic() - started < 5
 
 
@@ -937,7 +963,198 @@ def test_forward_resolution_stops_once_the_deadline_is_gone(
 
     monkeypatch.setattr(check, "_bounded_getaddrinfo", must_not_run)
     expired = check.Deadline(0.0)
-    assert check._forward_resolve({"a.test"}, {"203.0.113.7"}, expired) == {}
+    mapping, reason = check._forward_resolve({"a.test"}, {"203.0.113.7"}, expired)
+    assert mapping == {}
+    assert reason and "deadline expired" in reason
+
+
+# ================================ DNS completion must reach the verdict
+
+
+def _probe_with_one_external(address: str = "203.0.113.7"):
+    """A healthy probe that observed exactly one external endpoint."""
+    return lambda stage, **kw: check.ProbeOutcome(
+        all_connections={Connection(address, 443), Connection("127.0.0.1", 1)},
+        canary_seen=True,
+        canary_port=1,
+        successful_polls=3,
+        reached_ready=True,
+        child_pid=999,
+    )
+
+
+def test_reverse_dns_that_starts_in_budget_and_expires_during_it_is_exit_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact defect this block exists for.
+
+    `main` checked the deadline *before* DNS and never again. Reverse DNS could
+    start with plenty of budget, consume all of it, return an empty mapping, and
+    the run would go on to report a substantive undeclared-destination FAIL on a
+    clock that had already run out.
+    """
+    monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
+
+    def slow_but_successful(addresses, timeout):
+        time.sleep(max(0.0, timeout))  # burn exactly the granted budget
+        return {}, None  # succeeded, knew nothing
+
+    monkeypatch.setattr(check, "_dns_cache_reverse", slow_but_successful)
+    monkeypatch.setattr(check, "_bounded_getaddrinfo", lambda h, t: ([], None))
+
+    started = time.monotonic()
+    exit_code = check.main(["--timeout", "2.1"])
+    elapsed = time.monotonic() - started
+    assert exit_code == 2, "a verdict was reached after the deadline expired"
+    assert elapsed < 2.1 + check.CHILD_REAP_TIMEOUT
+
+
+def test_forward_resolution_hitting_its_bound_is_exit_two_not_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An abandoned lookup leaves the address unnamed - that is not a verdict."""
+    monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _a, _t: ({}, None))
+    monkeypatch.setattr(
+        check,
+        "_bounded_getaddrinfo",
+        lambda h, t: (None, f"resolving {h} exceeded its {t:.1f}s budget"),
+    )
+    assert check.main(["--timeout", "60"]) == 2
+
+
+def test_partial_dns_followed_by_deadline_expiry_is_exit_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some addresses named, then the clock runs out: still indeterminate.
+
+    A partial mapping is the most dangerous shape, because it looks like
+    evidence. The named address would pass and the unnamed one would fail, and
+    neither conclusion is supportable.
+    """
+    monkeypatch.setattr(
+        check,
+        "run_probe",
+        lambda stage, **kw: check.ProbeOutcome(
+            all_connections={
+                Connection("203.0.113.7", 443),
+                Connection("203.0.113.8", 443),
+                Connection("127.0.0.1", 1),
+            },
+            canary_seen=True,
+            canary_port=1,
+            successful_polls=3,
+            reached_ready=True,
+            child_pid=999,
+        ),
+    )
+    monkeypatch.setattr(
+        check,
+        "_dns_cache_reverse",
+        lambda _a, _t: ({"203.0.113.7": "play.googleapis.com"}, None),
+    )
+    monkeypatch.setattr(
+        check,
+        "_bounded_getaddrinfo",
+        lambda h, t: (None, "resolving exceeded its budget"),
+    )
+    assert check.main(["--timeout", "60"]) == 2
+
+
+def test_deadline_expiring_immediately_before_classification_is_exit_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS finished cleanly, but the clock ran out before the verdict.
+
+    `main` re-checks the one shared Deadline after DNS. Having had enough budget
+    to start DNS says nothing about whether anything was left afterwards.
+    """
+    monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
+
+    def complete_but_slow(addresses, declared=None, deadline=None):
+        # A clean, complete inference that happens to exhaust the budget.
+        while deadline is not None and not deadline.expired():
+            time.sleep(0.01)
+        return check.DnsInference({"203.0.113.7": "play.googleapis.com"}, complete=True)
+
+    monkeypatch.setattr(check, "dns_inference_for", complete_but_slow)
+    assert check.main(["--timeout", "2.5"]) == 2
+
+
+def test_completed_dns_with_an_unnamed_destination_still_fails_as_undeclared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fail-closed path must survive: a real exit 1 is still reachable."""
+    monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference({}, complete=True),
+    )
+    assert check.main(["--timeout", "120"]) == 1
+
+
+def test_completed_dns_matching_a_declared_destination_still_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And so must exit 0, or the check would just be a very slow `exit 2`."""
+    declared = check.load_allowlist()[0]
+    monkeypatch.setattr(check, "run_probe", _probe_with_one_external("172.217.113.4"))
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference(
+            {"172.217.113.4": declared["hostname"]}, complete=True
+        ),
+    )
+    assert check.main(["--timeout", "120"]) == 0
+
+
+def test_incomplete_dns_never_yields_a_substantive_verdict() -> None:
+    """Whatever the mapping looks like, incomplete means exit 2."""
+    outcome = _healthy(
+        all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 54321)}
+    )
+    # Even a mapping that would otherwise PASS.
+    passing_names = {"172.217.113.4": "play.googleapis.com"}
+    assert (
+        check.decide("full", outcome, DECLARED, passing_names, dns_complete=False).exit_code
+        == 2
+    )
+    # And one that would otherwise FAIL as undeclared.
+    assert check.decide("full", outcome, DECLARED, {}, dns_complete=False).exit_code == 2
+
+
+def test_the_incomplete_reason_is_surfaced_to_the_reader() -> None:
+    decision = check.decide(
+        "full",
+        _healthy(all_connections={Connection("203.0.113.7", 443)}),
+        DECLARED,
+        {},
+        dns_complete=False,
+        dns_reason="resolving example.test exceeded its 0.4s budget",
+    )
+    assert decision.exit_code == 2
+    assert any("0.4s budget" in note for note in decision.notes)
+
+
+def test_a_sliver_of_budget_is_not_enough_to_start_a_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below MIN_RESOLVE_BUDGET a lookup would only time out.
+
+    Spending it would let a timeout masquerade as a completed lookup, so the
+    work is skipped and reported as unfinished instead.
+    """
+
+    def must_not_run(*_a, **_k):
+        raise AssertionError("a lookup started with an unusable budget")
+
+    monkeypatch.setattr(check, "_bounded_getaddrinfo", must_not_run)
+    sliver = check.Deadline(check.MIN_RESOLVE_BUDGET / 2)
+    mapping, reason = check._forward_resolve({"a.test"}, {"203.0.113.7"}, sliver)
+    assert mapping == {}
+    assert reason is not None
 
 
 # ==================================================== the shipped child source

@@ -431,7 +431,21 @@ If external connections were observed but too little budget remains to attach a
 DNS candidate to them, the run returns **exit 2** rather than a verdict reached
 on borrowed time.
 
-**Two defects here, both real, both fixed.**
+**DNS reports whether it finished, and that answer reaches the verdict.**
+Inference returns a small structured result carrying the mapping, an explicit
+`complete` flag, and the reason when it is false. Completion is never inferred
+from the mapping being empty, because "the cache genuinely knew nothing" and
+"the lookup ran out of budget" produce exactly the same mapping and must not
+produce the same verdict. Any of these makes the run indeterminate: a failed or
+timed-out reverse lookup, a forward lookup that overran its remaining budget or
+errored, hostnames still unchecked when the budget ran out, and a deadline that
+expired during inference. The one shared deadline is then re-checked once more
+immediately before classification - having had enough budget to *start* DNS says
+nothing about whether anything was left afterwards. Below `MIN_RESOLVE_BUDGET`
+a lookup is not attempted at all, because spending a sliver of time would only
+let a timeout masquerade as a completed lookup.
+
+**Three defects here, all real, all fixed.**
 
 The first: every query was given a fixed 60-second timeout regardless of the
 budget, so a short deadline could be overrun by a full minute. The "hard
@@ -445,15 +459,26 @@ after it had run out. `--timeout 0.1` therefore granted the DNS stage a fresh
 two seconds and produced a substantive **exit 1** on a budget that was already
 spent. A single shared `Deadline` and the removal of that `max(...)` fix it.
 
+The third, found in review after the second was fixed: the shared deadline
+reached DNS, but DNS's *completion* never came back. `dns_inference_for`
+returned only a mapping, so a reverse lookup that succeeded-but-knew-nothing
+while consuming the entire remaining budget was indistinguishable from one that
+finished with time to spare. `main` left `dns_complete` true and never
+re-checked the clock. Reproduced: a healthy probe observing an undeclared
+`203.0.113.7:443`, DNS starting inside a 2.1-second budget and exhausting it,
+produced a substantive **exit 1** after 2.11 seconds. Explicit completion
+tracking plus the post-DNS re-check fix it; the same case now returns exit 2 in
+2.12 seconds.
+
 Measured end to end through `main`, with the real child, real queries, and the
 real DNS stage:
 
 | `--timeout` | elapsed | exit |
 |---|---|---|
-| 0.1s | 1.2s | 2 (was: exit 1 on a spent budget) |
-| 6s | 5.4s | 2 - deadline expired |
-| 20s | 15.1s | 0 - completes normally |
-| 40s | 15.6s | 0 - budget is not the binding constraint |
+| 0.1s | 0.7s | 2 (was: exit 1 on a spent budget) |
+| 6s | 4.7s | 2 - deadline expired |
+| 20s | 12.2s | 0 - completes normally |
+| 40s | 12.4s | 0 - budget is not the binding constraint |
 
 Short budgets finish *under* the deadline because the loop stops rather than
 starting work it cannot complete.
@@ -540,8 +565,10 @@ prevents the next variant of the same mistake.
   to this check. See section 4.4.
 - Naming a destination depends on DNS. An address that neither the cache nor a
   declared hostname accounts for is reported as unresolved and treated as
-  undeclared, which fails the check. That is the intended direction to fail in,
-  but it does mean a DNS outage surfaces as a failure rather than as a skip.
+  undeclared, which fails the check. A DNS *failure* - as opposed to a
+  successful lookup that matched nothing - is reported as an incomplete
+  observation (exit 2) rather than as an undeclared destination (exit 1),
+  because "cannot attribute" is a different claim from "not declared".
 - The overall deadline bounds the command, not process cleanup. Killing and
   reaping the child adds normal cleanup time on top, bounded separately at 10s,
   and an abandoned `getaddrinfo` daemon thread may outlive the call without

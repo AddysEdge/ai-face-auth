@@ -134,6 +134,11 @@ POWERSHELL_TIMEOUT_MAX = 60.0
 # instead and records that it ran out of time.
 MIN_QUERY_BUDGET = 2.0
 
+# The smallest budget in which a DNS lookup can meaningfully be attempted.
+# Below this the answer would almost certainly be a timeout, and a sliver of
+# leftover budget must not be spent pretending the naming step completed.
+MIN_RESOLVE_BUDGET = 0.5
+
 # Killing and reaping the child is outside the observation deadline: the run is
 # already over by then. It is bounded so it cannot hang, and the overshoot it
 # can contribute is stated honestly in the docs rather than hidden.
@@ -380,8 +385,29 @@ def query_connections(pid: int, timeout: float = POWERSHELL_TIMEOUT_MAX) -> set[
 # ------------------------------------------------------------- DNS inference
 
 
-def _dns_cache_reverse(addresses: set[str], timeout: float) -> dict[str, str]:
-    """Names the DNS client cache currently associates with these addresses."""
+@dataclass(frozen=True)
+class DnsInference:
+    """What DNS could say about the observed addresses, and whether it finished.
+
+    `complete` is tracked explicitly and is never inferred from `names` being
+    empty: "the cache legitimately knew nothing" and "the lookup ran out of
+    budget" produce the same mapping and must not produce the same verdict.
+    """
+
+    names: dict[str, str]
+    complete: bool
+    reason: str | None = None
+
+
+def _dns_cache_reverse(
+    addresses: set[str], timeout: float
+) -> tuple[dict[str, str], str | None]:
+    """Names the DNS client cache associates with these addresses.
+
+    Returns `(mapping, failure_reason)`. A failure is reported rather than
+    folded into an empty mapping, because an empty mapping is also what a
+    successful lookup of unknown addresses returns.
+    """
     body = (
         "$rows = @(Get-DnsClientCache); "
         "foreach ($r in $rows) { "
@@ -389,9 +415,9 @@ def _dns_cache_reverse(addresses: set[str], timeout: float) -> dict[str, str]:
     )
     try:
         out = _run_powershell(_wrap(body), timeout)
-    except ObserverError:
-        # Reported by the caller. Unresolved addresses stay undeclared.
-        return {}
+    except ObserverError as exc:
+        # Surfaced to the caller, never silently downgraded to "knew nothing".
+        return {}, f"reverse DNS lookup failed: {exc.kind.name}"
 
     mapping: dict[str, str] = {}
     for line in out.splitlines():
@@ -401,37 +427,51 @@ def _dns_cache_reverse(addresses: set[str], timeout: float) -> dict[str, str]:
         _, entry, data = parts
         if data in addresses and entry:
             mapping.setdefault(data, entry)
-    return mapping
+    return mapping, None
 
 
-def _bounded_getaddrinfo(hostname: str, timeout: float) -> list | None:
+def _bounded_getaddrinfo(
+    hostname: str, timeout: float
+) -> tuple[list | None, str | None]:
     """`socket.getaddrinfo` with a hard wall-clock bound.
+
+    Returns `(infos, failure_reason)`. Three outcomes are kept distinct, because
+    two of them produce an empty answer for entirely different reasons:
+
+    * `([...], None)` - the lookup completed. An empty list means the name
+      genuinely resolves to nothing that matches.
+    * `(None, "...timed out...")` - it overran its budget and was abandoned.
+    * `(None, "...failed...")` - it raised.
 
     `getaddrinfo` takes no timeout and cannot be cancelled, so it runs on a
     daemon thread that is simply abandoned if it overruns. Abandoning it is safe
     here: it holds no locks this process needs, and a daemon thread cannot delay
-    interpreter exit. Returns None when the lookup did not finish in time, which
-    leaves the address unnamed - and unnamed is undeclared, which fails.
+    interpreter exit.
     """
     if timeout <= 0:
-        return None
+        return None, f"no budget left to resolve {hostname}"
     result: list = []
+    error: list[str] = []
 
     def work() -> None:
-        with contextlib.suppress(OSError, UnicodeError):
+        try:
             result.extend(socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP))
+        except (OSError, UnicodeError) as exc:
+            error.append(f"{type(exc).__name__}: {exc}")
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
-        return None
-    return result
+        return None, f"resolving {hostname} exceeded its {timeout:.1f}s budget"
+    if error:
+        return None, f"resolving {hostname} failed: {error[0][:120]}"
+    return result, None
 
 
 def _forward_resolve(
     hostnames: set[str], addresses: set[str], deadline: Deadline | None = None
-) -> dict[str, str]:
+) -> tuple[dict[str, str], str | None]:
     """Which observed addresses are in a declared hostname's current DNS results.
 
     The cache lookup alone is unreliable: `play.googleapis.com` round-robins
@@ -444,28 +484,31 @@ def _forward_resolve(
     sharing the address and port would look identical here.
     """
     mapping: dict[str, str] = {}
-    for hostname in hostnames:
+    for hostname in sorted(hostnames):
         remaining = deadline.remaining() if deadline is not None else POWERSHELL_TIMEOUT_MAX
-        if remaining <= 0:
-            # Out of budget. Every address left over stays unnamed, which means
-            # undeclared, which fails. Omitting the lookup is the fail-closed
-            # direction; inventing time for it is not.
-            break
-        infos = _bounded_getaddrinfo(hostname, remaining)
+        if remaining < MIN_RESOLVE_BUDGET:
+            # Out of usable budget with hostnames still unchecked. A sliver of
+            # time is not enough to resolve anything, and spending it would only
+            # let a timeout masquerade as a completed lookup. Omitting the work
+            # is the fail-closed direction; the caller is told it did not finish.
+            return mapping, "the deadline expired before every declared hostname was resolved"
+        infos, failure = _bounded_getaddrinfo(hostname, remaining)
         if infos is None:
-            continue
+            # Overran or errored. Either way this address cannot be attributed,
+            # and "cannot attribute" is not the same claim as "not declared".
+            return mapping, failure
         for info in infos:
             address = str(info[4][0])
             if address in addresses:
                 mapping.setdefault(address, hostname)
-    return mapping
+    return mapping, None
 
 
 def dns_inference_for(
     addresses: set[str],
     declared: set[str] | None = None,
     deadline: Deadline | None = None,
-) -> dict[str, str]:
+) -> DnsInference:
     """Attach a *candidate* name to each observed address, or leave it unnamed.
 
     The result is DNS inference, not observed attribution: this check never sees
@@ -475,13 +518,25 @@ def dns_inference_for(
     converse does **not** hold: a match is not proof of the hostname contacted.
     """
     if not addresses:
-        return {}
+        return DnsInference({}, complete=True)
+
     budget = deadline.query_timeout() if deadline is not None else POWERSHELL_TIMEOUT_MAX
-    mapping = _dns_cache_reverse(addresses, budget)
+    mapping, reason = _dns_cache_reverse(addresses, budget)
+    if reason is not None:
+        return DnsInference(mapping, complete=False, reason=reason)
+
     unresolved = addresses - set(mapping)
     if unresolved and declared:
-        mapping.update(_forward_resolve(declared, unresolved, deadline))
-    return mapping
+        forward, reason = _forward_resolve(declared, unresolved, deadline)
+        mapping.update(forward)
+        if reason is not None:
+            return DnsInference(mapping, complete=False, reason=reason)
+
+    if deadline is not None and deadline.expired():
+        return DnsInference(
+            mapping, complete=False, reason="the deadline expired during DNS inference"
+        )
+    return DnsInference(mapping, complete=True)
 
 
 def load_allowlist() -> list[dict[str, Any]]:
@@ -712,6 +767,7 @@ def decide(
     allowed: list[dict[str, Any]],
     names: dict[str, str],
     dns_complete: bool = True,
+    dns_reason: str | None = None,
 ) -> Decision:
     """Turn an observation into an exit code. Pure - no I/O, fully testable."""
     notes: list[str] = []
@@ -776,12 +832,15 @@ def decide(
     if not dns_complete:
         return Decision(
             2,
-            "CANNOT OBSERVE: the deadline expired before destinations could be classified",
+            "CANNOT OBSERVE: destinations could not be classified within the deadline",
             [
-                "External connections were observed but there was no budget left to "
-                "attach a DNS candidate to them.",
-                "Classifying them would mean granting time the deadline no longer "
-                "has, so the run is indeterminate instead.",
+                dns_reason or "DNS inference did not finish.",
+                "External connections were observed, but the naming step did not "
+                "complete, so what is known about them is partial.",
+                "A partial mapping is not evidence: an address left unnamed by a "
+                "timeout looks identical to one the cache genuinely did not know. "
+                "Reporting either a pass or an undeclared-destination failure from "
+                "that would be guessing, so the run is indeterminate instead.",
                 "Raise --timeout if the environment is legitimately slower.",
             ],
         )
@@ -883,18 +942,34 @@ def main(argv: list[str] | None = None) -> int:
     addresses = {c.remote_address for c in outcome.external}
     names: dict[str, str] = {}
     dns_complete = True
+    dns_reason: str | None = None
     if addresses:
         if deadline.remaining() < MIN_QUERY_BUDGET:
             # Not enough left to ask honestly, and topping the budget up would
             # make the "one end-to-end deadline" claim false.
             dns_complete = False
+            dns_reason = "no budget remained to begin DNS inference"
         else:
-            names = dns_inference_for(
+            inference = dns_inference_for(
                 addresses,
                 declared={entry["hostname"] for entry in allowed},
                 deadline=deadline,
             )
-    decision = decide(stage, outcome, allowed, names, dns_complete=dns_complete)
+            names = inference.names
+            dns_complete = inference.complete
+            dns_reason = inference.reason
+
+    # Re-check the one shared deadline immediately before classifying. Having
+    # had enough budget to *start* DNS says nothing about whether it finished
+    # inside the budget, and a verdict reached after the clock ran out is a
+    # verdict reached on evidence nobody bounded.
+    if dns_complete and addresses and deadline.expired():
+        dns_complete = False
+        dns_reason = "the deadline expired before classification could begin"
+
+    decision = decide(
+        stage, outcome, allowed, names, dns_complete=dns_complete, dns_reason=dns_reason
+    )
 
     print("\nobserver health:")
     print(f"  child pid                : {outcome.child_pid}")

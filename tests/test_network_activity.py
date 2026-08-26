@@ -273,6 +273,68 @@ def test_dns_failure_leaves_addresses_unresolved(monkeypatch: pytest.MonkeyPatch
     assert check.dns_names_for({"10.0.0.1"}) == {}
 
 
+def test_forward_resolution_names_an_address_the_cache_missed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cache lookup is racy; resolving the declared hostname forward is not.
+
+    play.googleapis.com round-robins across eight A records, and the cache
+    entry for the address a connection actually used can be absent by the time
+    the query runs. That produced a false "undeclared destination" about one
+    run in six before forward resolution was added.
+    """
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(
+        check.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
+    )
+    mapping = check.dns_names_for({"172.217.113.4"}, declared={"play.googleapis.com"})
+    assert mapping == {"172.217.113.4": "play.googleapis.com"}
+
+
+def test_forward_resolution_cannot_name_an_address_outside_the_declared_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It confirms declared addresses; it can never launder an unknown host."""
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(
+        check.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [(None, None, None, "", ("172.217.113.4", 443))],
+    )
+    mapping = check.dns_names_for({"203.0.113.9"}, declared={"play.googleapis.com"})
+    assert mapping == {}
+
+
+def test_forward_resolution_failure_leaves_the_address_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_a, **_k):
+        raise OSError("dns down")
+
+    monkeypatch.setattr(check, "_dns_cache_reverse", lambda _addrs: {})
+    monkeypatch.setattr(check.socket, "getaddrinfo", boom)
+    assert check.dns_names_for({"203.0.113.9"}, declared={"play.googleapis.com"}) == {}
+
+
+def test_cache_hit_short_circuits_forward_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No live lookup happens when the cache already accounts for everything."""
+    monkeypatch.setattr(
+        check, "_dns_cache_reverse", lambda _addrs: {"10.0.0.1": "cached.test"}
+    )
+
+    def must_not_run(*_a, **_k):
+        raise AssertionError("forward resolution ran despite a complete cache hit")
+
+    monkeypatch.setattr(check.socket, "getaddrinfo", must_not_run)
+    assert check.dns_names_for({"10.0.0.1"}, declared={"x.test"}) == {
+        "10.0.0.1": "cached.test"
+    }
+
+
 def test_unresolved_address_is_treated_as_undeclared() -> None:
     outcome = _healthy(
         all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 54321)}

@@ -395,7 +395,29 @@ exists at all.
 Exit codes: **0** clean, **1** an undeclared destination or a FULL-mode
 expectation mismatch, **2** could not reliably observe.
 
-### 4.3 The trap that defeated the first version
+### 4.3 Naming an address without a racy lookup
+
+A destination is only "declared" if it can be named, and naming it purely from
+the DNS client cache turned out to be unreliable. `play.googleapis.com`
+round-robins across eight A records, and the cache entry for the particular
+address a connection used can be absent or expired by the time the query runs.
+Measured over eight rapid consecutive runs, that produced **one false
+"undeclared destination" failure** - the endpoint was observed correctly and
+then reported as unknown.
+
+The fix resolves in both directions. The cache is still consulted first. Any
+address it does not account for is checked against what the *declared*
+hostnames currently resolve to, which is not racy in the same way: it asks what
+the name resolves to now, and an observed address either is in that set or is
+not.
+
+This only ever confirms an address as belonging to a name **already on the
+allowlist**. It cannot invent a name for an address that is not, so it does not
+weaken the fail-closed property: an address that neither the cache nor a
+declared hostname accounts for stays unresolved, and unresolved is treated as
+undeclared. Eight consecutive runs after the fix: eight passes.
+
+### 4.4 The trap that defeated the first version
 
 The parent must poll the child's *real* PID, which is not necessarily
 `Popen.pid`. Several virtualenv layouts - `uv`-created environments among them -
@@ -410,7 +432,7 @@ That failure is also why the canary exists. Polling the right PID fixed the
 symptom; only an independent proof that the observer can see *something*
 prevents the next variant of the same mistake.
 
-### 4.4 Honest limits, stated up front
+### 4.5 Honest limits, stated up front
 
 - It observes **TCP connection endpoints**, not payloads. It proves *where*
   traffic goes, never *what* is in it.
@@ -425,6 +447,10 @@ prevents the next variant of the same mistake.
 - A connection shorter than the poll interval could still be missed. The check
   polls continuously rather than sampling once, but it is a detector, not a
   proof of absence.
+- Naming a destination depends on DNS. An address that neither the cache nor a
+  declared hostname accounts for is reported as unresolved and treated as
+  undeclared, which fails the check. That is the intended direction to fail in,
+  but it does mean a DNS outage surfaces as a failure rather than as a skip.
 
 ---
 

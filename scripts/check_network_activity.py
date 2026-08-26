@@ -311,15 +311,8 @@ def query_connections(pid: int) -> set[Connection]:
     return found
 
 
-def dns_names_for(addresses: set[str]) -> dict[str, str]:
-    """Map each IP to a hostname from the read-only DNS client cache.
-
-    This is how a destination is named rather than guessed. An address with no
-    cache entry stays unresolved, and an unresolved address is treated as
-    undeclared - a DNS failure can never launder an unknown host into a pass.
-    """
-    if not addresses:
-        return {}
+def _dns_cache_reverse(addresses: set[str]) -> dict[str, str]:
+    """Reverse-map IPs to hostnames using the read-only DNS client cache."""
     body = (
         "$rows = @(Get-DnsClientCache); "
         "foreach ($r in $rows) { "
@@ -328,7 +321,7 @@ def dns_names_for(addresses: set[str]) -> dict[str, str]:
     try:
         out = _run_powershell(_wrap(body))
     except ObserverError:
-        # Reported by the caller. Everything stays unresolved, hence undeclared.
+        # Reported by the caller. Unresolved addresses stay undeclared.
         return {}
 
     mapping: dict[str, str] = {}
@@ -339,6 +332,50 @@ def dns_names_for(addresses: set[str]) -> dict[str, str]:
         _, entry, data = parts
         if data in addresses and entry:
             mapping.setdefault(data, entry)
+    return mapping
+
+
+def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]:
+    """Match observed IPs against the addresses each declared hostname resolves to.
+
+    The reverse cache lookup alone is racy. `play.googleapis.com` round-robins
+    across eight A records, and the cache entry for the particular address a
+    connection used can be absent or expired by the time the query runs - which
+    produced a false "undeclared destination" roughly one run in six.
+
+    Resolving the *declared* hostname forward is not racy in the same way: it
+    asks what that name resolves to now, and an observed address either is in
+    that set or is not. This only ever confirms an address as belonging to a
+    name already on the allowlist; it can never invent a name for an address
+    that is not, so it cannot launder an unknown host into a pass.
+    """
+    mapping: dict[str, str] = {}
+    for hostname in hostnames:
+        try:
+            infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        except (OSError, UnicodeError):
+            continue
+        for info in infos:
+            address = str(info[4][0])
+            if address in addresses:
+                mapping.setdefault(address, hostname)
+    return mapping
+
+
+def dns_names_for(addresses: set[str], declared: set[str] | None = None) -> dict[str, str]:
+    """Name each observed IP, or leave it unresolved.
+
+    This is how a destination is named rather than guessed. An address that
+    neither the DNS cache nor a declared hostname accounts for stays
+    unresolved, and an unresolved address is treated as undeclared - a DNS
+    failure can never launder an unknown host into a pass.
+    """
+    if not addresses:
+        return {}
+    mapping = _dns_cache_reverse(addresses)
+    unresolved = addresses - set(mapping)
+    if unresolved and declared:
+        mapping.update(_forward_resolve(declared, unresolved))
     return mapping
 
 
@@ -681,8 +718,11 @@ def main(argv: list[str] | None = None) -> int:
         print("      Run scripts/fetch_models.py for the full check.")
 
     outcome = run_probe(stage)
-    names = dns_names_for({c.remote_address for c in outcome.external})
     allowed = load_allowlist()
+    names = dns_names_for(
+        {c.remote_address for c in outcome.external},
+        declared={entry["hostname"] for entry in allowed},
+    )
     decision = decide(stage, outcome, allowed, names)
 
     print("\nobserver health:")

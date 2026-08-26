@@ -18,7 +18,7 @@ Windows account it never can - see below.**
 
 | | |
 |---|---|
-| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 184 tests. |
+| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 201 tests. |
 | **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
 | **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, B15, and B17 are the most architecture-critical, but they are not the whole gate. |
 
@@ -120,7 +120,11 @@ compatibility rollback key has been unsupported since 9 September 2025.
   Full investigation in [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md);
   the open decision about what to do next is
   [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
-  `python scripts/check_network_activity.py` reproduces the measurement.
+  `python scripts/check_network_activity.py` re-checks this, and fails on any
+  destination it has not been told about. That checker reads **IP and port**;
+  the hostname it prints is DNS inference, not proof of the host contacted. The
+  independent evidence naming `play.googleapis.com` is the endpoint literal in
+  `libmediapipe.dll` plus the measured teardown correlation, both in the audit.
 - Rate-limits repeated failures with escalating cooldown, persisted to disk
   so it survives across separate CLI invocations, not just within one
   running process (see `docs/THREAT_MODEL.md` §12 for why this matters -

@@ -145,11 +145,13 @@ carry biometric content. The broader assurance that input data is never sent is
 carrying the extension was **not** decrypted, so any identifiers it may add are
 uncharacterised, and nothing here establishes that the telemetry is anonymous.
 
-The full measurement - destination, trigger, exact transmitted schema, retry
+The full measurement - destination, trigger, the MediaPipe telemetry
+extension schema, retry
 behaviour, and the opt-out search - is in
-[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). The open
-decision about whether to replace MediaPipe, rebuild it without telemetry, or
-narrow the offline claim is
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
+offline claims was mandatory and is already done; it is not a fix. The open
+decision - replace MediaPipe, or transparently build and verify it without
+telemetry - is
 [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
 `python scripts/check_network_activity.py` reproduces the measurement, and CI
 fails if any destination outside

@@ -27,10 +27,14 @@ this repository; it was introduced upstream between MediaPipe 0.10.21 and
 0.10.35 and was simply never noticed here. The defect this audit closes is a
 **documentation and privacy-disclosure defect**, not a regression.
 
-Every inaccurate offline claim has been retracted in this change. The decision
-about what to do next - replace MediaPipe, build it from source, or narrow the
-product's offline requirement - is recorded as an **open decision** in
-[ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md). It is
+Every inaccurate offline claim has been retracted in this change. That
+retraction was **mandatory and unconditional**, and it is not a fix: it makes
+the documentation true without changing what the software does.
+
+The resolution is a separate, still-open question with exactly two answers -
+replace MediaPipe, or transparently build and verify it without telemetry. It
+is recorded as an **open decision** in
+[ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md) and
 deliberately not decided here.
 
 **Phase 3's stricter requirement is unchanged.** The Phase 3 verifier service
@@ -305,7 +309,7 @@ The replacement wording used throughout is deliberately uniform:
 | File | What it is |
 |---|---|
 | `docs/PRIVACY_NETWORK_AUDIT.md` | This report |
-| `docs/adr/0005-...md` | The open decision: replace MediaPipe, rebuild it, or narrow the claim |
+| `docs/adr/0005-...md` | The open decision: replace MediaPipe, or transparently build and verify it without telemetry |
 | `scripts/check_network_activity.py` | The OS-level regression check (section 4) |
 | `scripts/network_allowlist.json` | The declared destinations, each with its justification |
 | `tests/test_network_activity.py` | Tests for the check, including that it cannot pass vacuously |
@@ -363,18 +367,31 @@ closes the sockets.
 ### 4.2 Why it cannot pass vacuously
 
 The dangerous failure of a check like this is not a wrong answer - it is a
-confident PASS from an observer that saw nothing because it was broken. Three
-things prevent that.
+confident PASS from an observer that saw nothing because it was broken.
 
 **Every OS query is checked, and failure is never silence.** A missing
 PowerShell executable, a non-zero exit, a timeout, a cmdlet-reported error, and
-output lacking the success sentinel are five distinct outcomes, none of which
-can become "no connections". Queries run under `-ErrorAction Stop` inside a
+output lacking the success sentinel are distinct outcomes, none of which can
+become "no connections". Queries run under `-ErrorAction Stop` inside a
 try/catch that emits `STATUS OK` or `STATUS ERR`, so the query separately
 reports whether it itself succeeded. The whole connection table is fetched and
 filtered on `OwningProcess`, because passing `-OwningProcess` directly throws
 `ObjectNotFound` when a process owns no connections - which would make "zero
 connections" indistinguishable from "the query failed".
+
+**Any failed query makes the whole run indeterminate.** A failed poll is an
+interval during which nobody was watching the child, and polls that succeeded
+before and after it say nothing about that interval. So *every*
+`ObserverFailure` kind ends at exit 2, and "most polls succeeded" is not an
+excuse. An earlier revision treated only a missing executable and a
+cmdlet-reported error as fatal, and let a timeout, a non-zero exit, or malformed
+output be followed by successful polls and an eventual exit 0. That was a
+fail-open path and it is gone.
+
+**Running out of time is a failure, not a footnote.** If the overall deadline
+expires the result is exit 2, even when the pid was found, READY was reached,
+the canary was seen, and connections were already observed - because the
+observation was cut short and the remainder was never watched.
 
 **An independent health canary must be observed before any PASS.** The parent
 opens a loopback listener; the child connects to it and holds the connection
@@ -395,29 +412,73 @@ exists at all.
 Exit codes: **0** clean, **1** an undeclared destination or a FULL-mode
 expectation mismatch, **2** could not reliably observe.
 
-### 4.3 Naming an address without a racy lookup
+### 4.3 How the deadline is actually enforced
 
-A destination is only "declared" if it can be named, and naming it purely from
-the DNS client cache turned out to be unreliable. `play.googleapis.com`
-round-robins across eight A records, and the cache entry for the particular
-address a connection used can be absent or expired by the time the query runs.
-Measured over eight rapid consecutive runs, that produced **one false
-"undeclared destination" failure** - the endpoint was observed correctly and
-then reported as unknown.
+One monotonic budget covers the whole run: child startup, imports, model
+initialisation, inference, teardown, the drain, and every PowerShell query.
 
-The fix resolves in both directions. The cache is still consulted first. Any
-address it does not account for is checked against what the *declared*
-hostnames currently resolve to, which is not racy in the same way: it asks what
-the name resolves to now, and an observed address either is in that set or is
-not.
+Each query's timeout is `min(POWERSHELL_TIMEOUT_MAX, remaining budget)`, so a
+single query can never outlive the run it belongs to. A poll is not started at
+all with less than `MIN_QUERY_BUDGET` (2s) left, because a query that cannot
+finish would just burn the remainder and report a timeout; the loop stops and
+records that it ran out of time instead.
 
-This only ever confirms an address as belonging to a name **already on the
-allowlist**. It cannot invent a name for an address that is not, so it does not
-weaken the fail-closed property: an address that neither the cache nor a
-declared hostname accounts for stays unresolved, and unresolved is treated as
-undeclared. Eight consecutive runs after the fix: eight passes.
+This mattered. An earlier revision passed a fixed 60-second timeout to every
+query regardless of the budget, so a short overall deadline could be overrun by
+up to a minute - the "hard monotonic deadline" was not hard at all. Measured
+after the fix, with the real child and real queries: a 6-second budget finished
+in 4.8s and a 12-second budget in 11.1s, both returning exit 2 for the expired
+deadline. Both finish *under* budget because the loop stops rather than starting
+a query it cannot complete.
 
-### 4.4 The trap that defeated the first version
+**Honest scope of the bound.** Killing and reaping the child happens after the
+deadline, in cleanup, and is separately bounded by `CHILD_REAP_TIMEOUT` (10s).
+So the wall-clock ceiling for a run is the budget plus normal process-cleanup
+time, not the budget exactly. What is ruled out is the old behaviour of blowing
+past a short budget by a full PowerShell timeout.
+
+### 4.4 What a destination name does and does not mean
+
+This check reads **IP address and port**. That is the observed fact. Everything
+else about a destination's identity is inference, and the code and output now
+say so.
+
+| | |
+|---|---|
+| **Observed fact** | the child opened a TCP connection to `IP:port` |
+| **DNS inference** | that IP was present in the DNS client cache for a name, or is in the set of addresses a *declared* hostname currently resolves to |
+| **Independent evidence** (not from this check) | the `https://play.googleapis.com/log` literal in `libmediapipe.dll`, and the measured correlation with MediaPipe session teardown - sections 1.1 and 1.2 |
+
+Naming from the cache alone was unreliable: `play.googleapis.com` round-robins
+across eight A records, and the cache entry for the address a connection used
+can be absent or expired by the time the query runs. Measured over eight rapid
+consecutive runs, that produced **one false "undeclared destination" failure**.
+Resolution therefore runs both directions - cache first, then any unaccounted
+address is checked against what the declared hostnames currently resolve to.
+
+**The limitation this does not remove.** Being in a declared hostname's address
+set means an observation is *consistent with* that declaration. It is not proof
+that the child contacted that hostname. This check never observes the DNS lookup
+the child performed and never inspects TLS SNI, so **a different service sharing
+an IP and port with a declared hostname would be reported as matching the
+declaration**. Shared front-ends are common, so this is a real gap rather than a
+theoretical one.
+
+An earlier revision of this document claimed forward resolution "cannot launder
+an unknown host into a pass". That was wrong in exactly this way, and the claim
+has been withdrawn from both the documentation and the source.
+
+What still holds is the direction that fails closed: an address that neither the
+cache nor a declared hostname accounts for stays unnamed, and an unnamed address
+is treated as undeclared, which fails. The converse does not hold and is no
+longer asserted anywhere.
+
+Closing this gap properly would need packet capture, TLS inspection, or ETW
+tracing - each of which would mean certificate installation or persistent system
+configuration. That is out of scope here, and the check is documented as an
+IP-level endpoint regression detector rather than as hostname attribution.
+
+### 4.5 The trap that defeated the first version
 
 The parent must poll the child's *real* PID, which is not necessarily
 `Popen.pid`. Several virtualenv layouts - `uv`-created environments among them -
@@ -432,7 +493,7 @@ That failure is also why the canary exists. Polling the right PID fixed the
 symptom; only an independent proof that the observer can see *something*
 prevents the next variant of the same mistake.
 
-### 4.5 Honest limits, stated up front
+### 4.6 Honest limits, stated up front
 
 - It observes **TCP connection endpoints**, not payloads. It proves *where*
   traffic goes, never *what* is in it.
@@ -447,10 +508,15 @@ prevents the next variant of the same mistake.
 - A connection shorter than the poll interval could still be missed. The check
   polls continuously rather than sampling once, but it is a detector, not a
   proof of absence.
+- **It reads IP and port, not hostnames.** A name in the output is DNS
+  inference. Another service sharing a declared IP and port is indistinguishable
+  to this check. See section 4.4.
 - Naming a destination depends on DNS. An address that neither the cache nor a
   declared hostname accounts for is reported as unresolved and treated as
   undeclared, which fails the check. That is the intended direction to fail in,
   but it does mean a DNS outage surfaces as a failure rather than as a skip.
+- The overall deadline bounds observation, not process cleanup. Killing and
+  reaping the child adds normal cleanup time on top, bounded separately at 10s.
 
 ---
 

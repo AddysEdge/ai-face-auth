@@ -11,48 +11,75 @@ section 1.5.
 
 So this check runs one level down. It launches a child process that exercises
 the runtime, and the *parent* asks Windows which TCP connections that child
-owns. Remote IPs are resolved back to hostnames from the read-only DNS cache
-and compared against `scripts/network_allowlist.json`.
+owns. What it records is `IP:port`. Hostnames are attached afterwards as **DNS
+inference**, not as observed fact - see "What a destination name means" below.
 
 Failing closed
 --------------
 The dangerous failure of a check like this is not a wrong answer - it is a
 confident PASS produced by an observer that saw nothing because it was broken.
-This one refuses to do that:
+So:
 
-* Every PowerShell invocation is checked for a missing executable, a non-zero
-  exit, a timeout, and output that does not carry the success sentinel. None of
-  those is ever converted into "no connections".
-* An **observer-health canary** runs independently of the outbound evaluation.
-  The parent opens a loopback listener; the child connects to it and holds the
-  connection. Before any PASS is possible, the parent must see Windows report
-  that loopback connection under the child's self-reported PID. If it cannot,
-  the observer is not trustworthy and the check exits 2.
+* **Any failed OS observation makes the whole result indeterminate.** A failed
+  poll is an interval during which the child was unwatched, and no number of
+  successful polls before or after it can testify about that interval. Every
+  `ObserverFailure` kind ends at exit 2. "Some polls succeeded" is not an
+  excuse.
+* **Running out of time is a failure, not a footnote.** If the overall deadline
+  expires, the result is exit 2 even when the pid was found, READY was reached,
+  the canary was seen, and connections were already observed - because the
+  observation was cut short.
+* **An observer-health canary gates every PASS.** The parent opens a loopback
+  listener; the child connects to it and holds the connection. Windows must
+  report that connection under the child's self-reported PID. If it cannot, the
+  observer is not trustworthy and the check exits 2.
 * In FULL mode a non-empty allowlist is an *expectation*, not just a permission
-  list. If a declared endpoint is expected to be observable and is not observed,
-  that is a mismatch to investigate, not a pass.
+  list. A declared destination that should be observable and is not is a
+  mismatch to investigate, not a pass.
 
 Loopback never participates in outbound evaluation and can never be allowlisted
 as an external destination.
 
+What a destination name means
+-----------------------------
+**Observed fact:** the child opened a TCP connection to a specific IP and port.
+
+**DNS inference:** that IP appeared in the DNS client cache for a hostname, or
+is in the set of addresses a *declared* hostname currently resolves to. That is
+inference, not attribution. This check never observes the DNS lookup the child
+performed and never inspects TLS SNI, so it **cannot** prove which hostname the
+child actually contacted.
+
+The practical limit: a different service sharing an IP and port with a declared
+hostname is indistinguishable to this check, and would be reported as matching
+the declaration. Front-ends of this kind are common, so this is a real gap, not
+a theoretical one. An address that matches nothing stays unresolved and is
+treated as undeclared, which fails - but the converse does not hold, and no
+claim to the contrary is made anywhere in this file.
+
+The independent evidence that `play.googleapis.com` is genuinely the
+destination is separate from this check: the endpoint literal in
+`libmediapipe.dll` and the measured correlation with MediaPipe session
+teardown, both recorded in `docs/PRIVACY_NETWORK_AUDIT.md`.
+
 What it proves, and what it does not
 ------------------------------------
-It proves *where* traffic goes. It says nothing about payload contents - it
-observes connection endpoints, not bytes. It is a detector, not a proof of
-absence: a connection shorter than the poll interval could still be missed.
+It proves *where*, at IP level, traffic went. It says nothing about payload
+contents - it observes connection endpoints, not bytes. It is a detector, not a
+proof of absence: a connection shorter than the poll interval could be missed.
 
 Safety
 ------
 Read-only with respect to system state. No firewall, proxy, certificate,
-registry, or service change. The only socket it creates is a transient
-loopback listener owned by this process. No camera is opened and no biometric
-data is read: the child runs synthetic frames only.
+registry, or service change. The only socket it creates is a transient loopback
+listener owned by this process. No camera is opened and no biometric data is
+read: the child runs synthetic frames only.
 
 Windows-only, because it depends on `Get-NetTCPConnection`.
 
 Usage
 -----
-    python scripts/check_network_activity.py [--json]
+    python scripts/check_network_activity.py [--json] [--timeout SECONDS]
 
 Exit codes
 ----------
@@ -91,13 +118,25 @@ LOOPBACK_ADDRESSES = frozenset({"0.0.0.0", "::", "127.0.0.1", "::1"})
 POLL_INTERVAL = 0.15
 DRAIN_SECONDS = 8.0
 OVERALL_TIMEOUT = 300.0
-POWERSHELL_TIMEOUT = 60
-CHILD_REAP_TIMEOUT = 30.0
+
+# Upper bound on any single PowerShell query. The *effective* timeout is the
+# smaller of this and the time left on the overall deadline, so a query can
+# never overrun the run it belongs to.
+POWERSHELL_TIMEOUT_MAX = 60.0
+
+# A PowerShell round trip costs roughly a second. Starting one with less budget
+# than this just burns the remainder and reports a timeout, so the loop stops
+# instead and records that it ran out of time.
+MIN_QUERY_BUDGET = 2.0
+
+# Killing and reaping the child is outside the observation deadline: the run is
+# already over by then. It is bounded so it cannot hang, and the overshoot it
+# can contribute is stated honestly in the docs rather than hidden.
+CHILD_REAP_TIMEOUT = 10.0
 
 # How long the child holds a MediaPipe session open before tearing it down.
 # Measured: the upload happens even at a dwell of 0.0s, so this is not required
 # to make the trigger fire and is deliberately not presented as a threshold.
-# It is a small margin against teardown racing setup.
 SESSION_DWELL_SECONDS = 1.0
 
 # Emitted by every PowerShell helper as the last line of a successful run.
@@ -108,13 +147,15 @@ _PS_ERR = "STATUS ERR"
 
 
 class ObserverFailure(Enum):
-    """Why an OS observation could not be trusted."""
+    """Why an OS observation could not be trusted. Every kind ends at exit 2."""
 
     EXECUTABLE_MISSING = "the PowerShell executable could not be launched"
     TIMEOUT = "the PowerShell query timed out"
     NONZERO_EXIT = "PowerShell exited non-zero"
     QUERY_FAILED = "the cmdlet reported an error (missing, permission, or execution failure)"
     MALFORMED_OUTPUT = "the query produced output without a success sentinel"
+    CHILD_SPAWN_FAILED = "the probe child process could not be started"
+    DEADLINE_EXPIRED = "the overall deadline expired before observation finished"
 
 
 class ObserverError(RuntimeError):
@@ -124,6 +165,23 @@ class ObserverError(RuntimeError):
         super().__init__(f"{kind.value}{': ' + detail if detail else ''}")
         self.kind = kind
         self.detail = detail
+
+
+class Deadline:
+    """A single monotonic budget for one run, shared by every bounded step."""
+
+    def __init__(self, seconds: float) -> None:
+        self._end = time.monotonic() + seconds
+
+    def remaining(self) -> float:
+        return max(0.0, self._end - time.monotonic())
+
+    def expired(self) -> bool:
+        return self.remaining() <= 0.0
+
+    def query_timeout(self) -> float:
+        """Effective timeout for one PowerShell call: never past the deadline."""
+        return max(0.0, min(POWERSHELL_TIMEOUT_MAX, self.remaining()))
 
 
 @dataclass(frozen=True)
@@ -225,12 +283,15 @@ def _redact(text: str) -> str:
     return text
 
 
-def _run_powershell(command: str, timeout: int = POWERSHELL_TIMEOUT) -> str:
+def _run_powershell(command: str, timeout: float) -> str:
     """Run a PowerShell command, raising ObserverError on any failure.
 
-    Returns stdout only when the command ran to completion. Nothing here ever
+    `timeout` is supplied by the caller from the remaining overall budget, so a
+    single query can never outlive the run it belongs to. Nothing here ever
     converts a failure into empty output.
     """
+    if timeout <= 0:
+        raise ObserverError(ObserverFailure.TIMEOUT, "no time left on the overall deadline")
     try:
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -243,7 +304,7 @@ def _run_powershell(command: str, timeout: int = POWERSHELL_TIMEOUT) -> str:
     except OSError as exc:
         raise ObserverError(ObserverFailure.EXECUTABLE_MISSING, str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise ObserverError(ObserverFailure.TIMEOUT, f"after {timeout}s") from exc
+        raise ObserverError(ObserverFailure.TIMEOUT, f"after {timeout:.1f}s") from exc
 
     if completed.returncode != 0:
         detail = _redact((completed.stderr or "").strip())[:400]
@@ -281,7 +342,7 @@ def _wrap(body: str) -> str:
     )
 
 
-def query_connections(pid: int) -> set[Connection]:
+def query_connections(pid: int, timeout: float = POWERSHELL_TIMEOUT_MAX) -> set[Connection]:
     """Every TCP connection Windows attributes to `pid`, loopback included.
 
     Deliberately queries the whole table and filters in PowerShell. Passing
@@ -294,7 +355,7 @@ def query_connections(pid: int) -> set[Connection]:
         f"foreach ($c in $all) {{ if ($c.OwningProcess -eq {pid}) {{ "
         "Write-Output ('CONN ' + $c.RemoteAddress + ' ' + $c.RemotePort) } }"
     )
-    out = _run_powershell(_wrap(body))
+    out = _run_powershell(_wrap(body), timeout)
 
     found: set[Connection] = set()
     for line in out.splitlines():
@@ -311,15 +372,18 @@ def query_connections(pid: int) -> set[Connection]:
     return found
 
 
-def _dns_cache_reverse(addresses: set[str]) -> dict[str, str]:
-    """Reverse-map IPs to hostnames using the read-only DNS client cache."""
+# ------------------------------------------------------------- DNS inference
+
+
+def _dns_cache_reverse(addresses: set[str], timeout: float) -> dict[str, str]:
+    """Names the DNS client cache currently associates with these addresses."""
     body = (
         "$rows = @(Get-DnsClientCache); "
         "foreach ($r in $rows) { "
         "Write-Output ('DNS ' + $r.Entry + ' ' + $r.Data) }"
     )
     try:
-        out = _run_powershell(_wrap(body))
+        out = _run_powershell(_wrap(body), timeout)
     except ObserverError:
         # Reported by the caller. Unresolved addresses stay undeclared.
         return {}
@@ -336,18 +400,16 @@ def _dns_cache_reverse(addresses: set[str]) -> dict[str, str]:
 
 
 def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]:
-    """Match observed IPs against the addresses each declared hostname resolves to.
+    """Which observed addresses are in a declared hostname's current DNS results.
 
-    The reverse cache lookup alone is racy. `play.googleapis.com` round-robins
-    across eight A records, and the cache entry for the particular address a
-    connection used can be absent or expired by the time the query runs - which
-    produced a false "undeclared destination" roughly one run in six.
+    The cache lookup alone is unreliable: `play.googleapis.com` round-robins
+    across eight A records, and the entry for the address a connection used can
+    be absent by the time the query runs, which produced false failures.
 
-    Resolving the *declared* hostname forward is not racy in the same way: it
-    asks what that name resolves to now, and an observed address either is in
-    that set or is not. This only ever confirms an address as belonging to a
-    name already on the allowlist; it can never invent a name for an address
-    that is not, so it cannot launder an unknown host into a pass.
+    This narrows that gap but does not close the attribution question. Being in
+    a declared hostname's address set means the observation is *consistent with*
+    that declaration - not that the child contacted that hostname. Anything else
+    sharing the address and port would look identical here.
     """
     mapping: dict[str, str] = {}
     for hostname in hostnames:
@@ -362,17 +424,22 @@ def _forward_resolve(hostnames: set[str], addresses: set[str]) -> dict[str, str]
     return mapping
 
 
-def dns_names_for(addresses: set[str], declared: set[str] | None = None) -> dict[str, str]:
-    """Name each observed IP, or leave it unresolved.
+def dns_inference_for(
+    addresses: set[str],
+    declared: set[str] | None = None,
+    timeout: float = POWERSHELL_TIMEOUT_MAX,
+) -> dict[str, str]:
+    """Attach a *candidate* name to each observed address, or leave it unnamed.
 
-    This is how a destination is named rather than guessed. An address that
-    neither the DNS cache nor a declared hostname accounts for stays
-    unresolved, and an unresolved address is treated as undeclared - a DNS
-    failure can never launder an unknown host into a pass.
+    The result is DNS inference, not observed attribution: this check never sees
+    the child's DNS lookup and never inspects TLS SNI. An address that neither
+    the cache nor a declared hostname accounts for stays unnamed, and an unnamed
+    address is treated as undeclared - so a DNS failure fails closed. The
+    converse does **not** hold: a match is not proof of the hostname contacted.
     """
     if not addresses:
         return {}
-    mapping = _dns_cache_reverse(addresses)
+    mapping = _dns_cache_reverse(addresses, timeout)
     unresolved = addresses - set(mapping)
     if unresolved and declared:
         mapping.update(_forward_resolve(declared, unresolved))
@@ -405,18 +472,22 @@ def watch_child(
     drain_seconds: float = DRAIN_SECONDS,
     poll_interval: float = POLL_INTERVAL,
     cwd: Path = REPO_ROOT,
-    connection_query: Callable[[int], set[Connection]] = query_connections,
+    connection_query: Callable[..., set[Connection]] = query_connections,
 ) -> ProbeOutcome:
     """Run a child and poll Windows about it, independently of its output.
 
     Child stdout and stderr are drained by reader threads, so polling proceeds
-    on its own cadence and a connection that opens and closes while the child
-    is silent is still seen. A single monotonic deadline bounds the whole run,
-    so a hung import, a hung model init, a hung teardown, or a stuck reader
-    cannot hang the check.
+    on its own cadence and a connection that opens and closes while the child is
+    silent is still seen.
+
+    One monotonic deadline bounds child startup, imports, model initialisation,
+    inference, teardown, the drain, and every PowerShell query - each query's
+    timeout is clamped to what is left, and a poll is not started at all without
+    `MIN_QUERY_BUDGET` remaining. Killing and reaping the child happens after
+    the deadline and is separately bounded by `CHILD_REAP_TIMEOUT`.
     """
     outcome = ProbeOutcome()
-    deadline = time.monotonic() + overall_timeout
+    deadline = Deadline(overall_timeout)
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     accepted: socket.socket | None = None
@@ -428,32 +499,34 @@ def watch_child(
         canary_port = int(listener.getsockname()[1])
         outcome.canary_port = canary_port
 
-        child = subprocess.Popen(
-            argv_builder(canary_port),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=str(cwd),
-            bufsize=1,
-        )
+        try:
+            child = subprocess.Popen(
+                argv_builder(canary_port),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=str(cwd),
+                bufsize=1,
+            )
+        except (OSError, ValueError) as exc:
+            # A bad interpreter path, a missing cwd, a malformed argv. Report it
+            # as an observation failure rather than a traceback.
+            outcome.fatal = (ObserverFailure.CHILD_SPAWN_FAILED, _redact(str(exc))[:400])
+            return outcome
+
         out_q: queue.Queue[str | None] = queue.Queue()
         err_q: queue.Queue[str | None] = queue.Queue()
-        threads = [
-            threading.Thread(target=_pump, args=(child.stdout, out_q), daemon=True),
-            threading.Thread(target=_pump, args=(child.stderr, err_q), daemon=True),
-        ]
-        for thread in threads:
-            thread.start()
+        for stream, sink in ((child.stdout, out_q), (child.stderr, err_q)):
+            threading.Thread(target=_pump, args=(stream, sink), daemon=True).start()
 
         drain_until: float | None = None
         stdout_closed = False
 
         while True:
-            now = time.monotonic()
-            if now >= deadline:
+            if deadline.expired():
                 outcome.timed_out = True
                 break
-            if drain_until is not None and now >= drain_until:
+            if drain_until is not None and time.monotonic() >= drain_until:
                 break
 
             # --- child output, consumed without ever blocking the poll loop ---
@@ -487,17 +560,25 @@ def watch_child(
                 with contextlib.suppress(TimeoutError, OSError):
                     accepted, _addr = listener.accept()
 
-            # --- poll Windows, on our own cadence ---
+            # --- poll Windows, on our own cadence and inside the deadline ---
             if outcome.child_pid is not None:
+                if deadline.remaining() < MIN_QUERY_BUDGET:
+                    # Not enough budget to ask honestly. Stop and say so.
+                    outcome.timed_out = True
+                    break
                 try:
-                    connections = connection_query(outcome.child_pid)
+                    connections = connection_query(
+                        outcome.child_pid, deadline.query_timeout()
+                    )
                 except ObserverError as exc:
+                    # Any failure is an unobserved interval. Record it; the
+                    # decision layer refuses to pass on it either way. Kinds
+                    # that cannot recover stop the loop immediately.
                     outcome.failed_polls.append((exc.kind, exc.detail))
                     if exc.kind in (
                         ObserverFailure.EXECUTABLE_MISSING,
                         ObserverFailure.QUERY_FAILED,
                     ):
-                        # Not transient. Stop rather than keep pretending to watch.
                         outcome.fatal = (exc.kind, exc.detail)
                         break
                 else:
@@ -517,7 +598,7 @@ def watch_child(
             elif stdout_closed and drain_until is None:
                 drain_until = time.monotonic() + min(drain_seconds, 2.0)
 
-            time.sleep(poll_interval)
+            time.sleep(min(poll_interval, max(0.0, deadline.remaining())))
 
         # Final drain. A child that exits almost immediately can still have
         # lines in flight when the loop ends, and reporting "never reported its
@@ -591,7 +672,8 @@ def decide(
     """Turn an observation into an exit code. Pure - no I/O, fully testable."""
     notes: list[str] = []
 
-    # ---- 1. Was the observer trustworthy at all? Nothing else matters first.
+    # ---- 1. Was the observer trustworthy for the WHOLE run? Nothing else
+    # matters until that is settled, and a gap anywhere is disqualifying.
     if outcome.fatal is not None:
         kind, detail = outcome.fatal
         return Decision(2, f"CANNOT OBSERVE: {kind.value}", [detail] if detail else [])
@@ -604,7 +686,7 @@ def decide(
     if not outcome.reached_ready:
         detail = f"child exit code {outcome.child_returncode}"
         if outcome.timed_out:
-            detail = "child never reached READY before the overall timeout"
+            detail = "child never reached READY before the overall deadline"
         return Decision(2, "CANNOT OBSERVE: the child failed before READY", [detail])
     if outcome.successful_polls == 0:
         kinds = {k.value for k, _ in outcome.failed_polls}
@@ -623,35 +705,47 @@ def decide(
                 "The observer is not proven to work, so no PASS can be trusted.",
             ],
         )
-    if outcome.timed_out:
-        notes.append(
-            "the overall timeout elapsed; observations up to that point are used"
-        )
     if outcome.failed_polls:
-        kinds = sorted({k.value for k, _ in outcome.failed_polls})
-        notes.append(
-            f"{len(outcome.failed_polls)} of "
-            f"{len(outcome.failed_polls) + outcome.successful_polls} polls failed "
-            f"({'; '.join(kinds)}); the rest succeeded"
+        kinds = sorted({k.name for k, _ in outcome.failed_polls})
+        return Decision(
+            2,
+            "CANNOT OBSERVE: at least one OS query failed, leaving an unwatched interval",
+            [
+                f"{len(outcome.failed_polls)} of "
+                f"{len(outcome.failed_polls) + outcome.successful_polls} queries failed "
+                f"({', '.join(kinds)}).",
+                "Polls that succeeded before and after a gap say nothing about the "
+                "gap itself, so this is indeterminate rather than clean.",
+            ],
+        )
+    if outcome.timed_out:
+        return Decision(
+            2,
+            "CANNOT OBSERVE: the overall deadline expired before observation finished",
+            [
+                "The pid, READY, and the canary may all look healthy, but the run "
+                "was cut short, so the observation is incomplete.",
+                "Raise --timeout if the environment is legitimately slower.",
+            ],
         )
 
-    # ---- 2. Classify what was observed.
+    # ---- 2. Classify what was observed. Names here are DNS *inference*.
     allowed_pairs = {(e["hostname"], e["port"]) for e in allowed}
     external: list[dict[str, Any]] = []
     undeclared: list[dict[str, Any]] = []
     seen_pairs: set[tuple[str, int]] = set()
     for conn in sorted(outcome.external, key=lambda c: (c.remote_address, c.remote_port)):
-        hostname = names.get(conn.remote_address)
+        candidate = names.get(conn.remote_address)
         record = {
             "address": conn.remote_address,
             "port": conn.remote_port,
-            "hostname": hostname,
+            "dns_candidate": candidate,
         }
         external.append(record)
-        if hostname is None or (hostname, conn.remote_port) not in allowed_pairs:
+        if candidate is None or (candidate, conn.remote_port) not in allowed_pairs:
             undeclared.append(record)
         else:
-            seen_pairs.add((hostname, conn.remote_port))
+            seen_pairs.add((candidate, conn.remote_port))
 
     if undeclared:
         return Decision(
@@ -697,6 +791,12 @@ def decide(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OS-level outbound-network check")
     parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=OVERALL_TIMEOUT,
+        help=f"overall monotonic budget in seconds (default {OVERALL_TIMEOUT:.0f})",
+    )
     args = parser.parse_args(argv)
 
     if sys.platform != "win32":
@@ -717,11 +817,13 @@ def main(argv: list[str] | None = None) -> int:
         print("      and no result here should be read as covering it.")
         print("      Run scripts/fetch_models.py for the full check.")
 
-    outcome = run_probe(stage)
+    budget = Deadline(args.timeout)
+    outcome = run_probe(stage, overall_timeout=args.timeout)
     allowed = load_allowlist()
-    names = dns_names_for(
+    names = dns_inference_for(
         {c.remote_address for c in outcome.external},
         declared={entry["hostname"] for entry in allowed},
+        timeout=max(MIN_QUERY_BUDGET, budget.query_timeout()),
     )
     decision = decide(stage, outcome, allowed, names)
 
@@ -734,14 +836,22 @@ def main(argv: list[str] | None = None) -> int:
         f"  (port {outcome.canary_port})"
     )
     print(f"  child reached READY      : {'YES' if outcome.reached_ready else 'NO'}")
+    print(f"  overall deadline expired : {'YES' if outcome.timed_out else 'no'}")
 
-    print(f"\nexternal endpoints observed: {len(decision.external)}")
+    print(f"\nexternal endpoints observed (fact: IP:port): {len(decision.external)}")
     for record in decision.external:
-        name = record["hostname"] or "(unresolved - no DNS cache entry)"
+        name = record["dns_candidate"] or "(no DNS candidate)"
         marker = "UNDECLARED" if record in decision.undeclared else "declared"
-        print(f"  [{marker:^10}] {name}  {record['address']}:{record['port']}")
+        print(f"  [{marker:^10}] {record['address']}:{record['port']}  ~ {name}")
     if not decision.external:
         print("  (none)")
+    if decision.external:
+        print(
+            "  '~ name' is DNS INFERENCE, not the hostname the child was observed to\n"
+            "  contact. This check reads IP and port only - it never sees the child's\n"
+            "  DNS lookup and never inspects TLS SNI. Another service sharing a\n"
+            "  declared IP and port would be indistinguishable here."
+        )
 
     print("\ndeclared allowlist:")
     for entry in allowed:
@@ -778,6 +888,7 @@ def main(argv: list[str] | None = None) -> int:
                     "external": decision.external,
                     "undeclared": decision.undeclared,
                     "missing_expected": decision.missing_expected,
+                    "name_attribution": "dns-inference-only; not observed SNI",
                 },
                 indent=2,
             )

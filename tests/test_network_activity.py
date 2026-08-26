@@ -968,6 +968,181 @@ def test_forward_resolution_stops_once_the_deadline_is_gone(
     assert reason and "deadline expired" in reason
 
 
+# ====================== the command deadline covers classification too
+
+
+def _probe_that_burns_the_budget(external: set | None = None):
+    """A probe that finishes cleanly but leaves nothing on the clock.
+
+    Deterministic rather than timing-dependent: it spins on the shared Deadline
+    until it has genuinely expired, so the state under test is guaranteed.
+    """
+
+    def probe(stage, **kwargs):
+        deadline = kwargs.get("deadline")
+        while deadline is not None and not deadline.expired():
+            time.sleep(0.01)
+        return check.ProbeOutcome(
+            all_connections={Connection("127.0.0.1", 1)} | (external or set()),
+            canary_seen=True,
+            canary_port=1,
+            successful_polls=5,
+            reached_ready=True,
+            child_pid=999,
+            timed_out=False,  # the probe itself was not cut short
+        )
+
+    return probe
+
+
+def _run_main(monkeypatch, stage, probe, timeout="2.0", extra=()):
+    monkeypatch.setattr(
+        check,
+        "LANDMARKER",
+        REPO_ROOT / "models" / "face_landmarker.task"
+        if stage == "full"
+        else Path("no-such-model.task"),
+    )
+    monkeypatch.setattr(check, "run_probe", probe)
+    return check.main(["--timeout", timeout, *extra])
+
+
+def test_imports_only_with_no_addresses_cannot_pass_after_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reported defect, half one.
+
+    `main` guarded its final deadline check with `and addresses`, so a probe
+    that observed nothing external skipped the check entirely and reported a
+    clean PASS on a clock that had already run out.
+    """
+    assert _run_main(monkeypatch, "imports", _probe_that_burns_the_budget()) == 2
+    out = capsys.readouterr().out
+    assert "PASS" not in out
+    assert "command deadline expired    : YES" in out
+
+
+def test_full_mode_with_no_addresses_cannot_report_missing_expected_after_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reported defect, half two.
+
+    Same conditions in FULL mode produced a substantive exit 1 for the missing
+    declared endpoint - a claim about what the run observed, made after the run
+    had lost the authority to make it.
+    """
+    assert _run_main(monkeypatch, "full", _probe_that_burns_the_budget()) == 2
+    out = capsys.readouterr().out
+    assert "INDETERMINATE: a declared destination" not in out
+    assert "command deadline expired    : YES" in out
+
+
+def test_the_expired_command_deadline_is_reported_truthfully(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Human output printed `outcome.timed_out`, which is a different clock.
+
+    The probe finishing cleanly is not the same fact as the command budget
+    surviving, and printing the first under a label that reads like the second
+    told the reader the opposite of what happened.
+    """
+    _run_main(monkeypatch, "imports", _probe_that_burns_the_budget())
+    out = capsys.readouterr().out
+    assert "probe observation cut short : no" in out
+    assert "command deadline expired    : YES" in out
+
+
+def test_json_distinguishes_the_probe_clock_from_the_command_clock(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = _run_main(
+        monkeypatch, "imports", _probe_that_burns_the_budget(), extra=("--json",)
+    )
+    out = capsys.readouterr().out
+    payload, _end = json.JSONDecoder().raw_decode(out[out.index("{") :])
+    assert exit_code == 2
+    assert payload["observer"]["probe_timed_out"] is False
+    assert payload["command_deadline_expired"] is True
+    assert payload["dns_complete"] is True  # DNS was never the problem here
+
+
+def test_an_unexpired_deadline_still_lets_imports_only_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must not turn every run into exit 2."""
+    quick = lambda stage, **kw: check.ProbeOutcome(  # noqa: E731
+        all_connections={Connection("127.0.0.1", 1)},
+        canary_seen=True,
+        canary_port=1,
+        successful_polls=5,
+        reached_ready=True,
+        child_pid=999,
+    )
+    assert _run_main(monkeypatch, "imports", quick, timeout="120") == 0
+
+
+def test_an_unexpired_deadline_preserves_full_mode_missing_expected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FULL mode must still notice a declared endpoint that went missing."""
+    quick = lambda stage, **kw: check.ProbeOutcome(  # noqa: E731
+        all_connections={Connection("127.0.0.1", 1)},
+        canary_seen=True,
+        canary_port=1,
+        successful_polls=5,
+        reached_ready=True,
+        child_pid=999,
+    )
+    assert _run_main(monkeypatch, "full", quick, timeout="120") == 1
+
+
+def test_an_expired_command_deadline_blocks_both_substantive_verdicts() -> None:
+    """Neither exit 0 nor exit 1 is reachable once the budget is gone."""
+    # Would otherwise PASS.
+    passing = _healthy(
+        all_connections={Connection("172.217.113.4", 443), Connection("127.0.0.1", 1)}
+    )
+    assert (
+        check.decide(
+            "full",
+            passing,
+            DECLARED,
+            {"172.217.113.4": "play.googleapis.com"},
+            deadline_expired=True,
+        ).exit_code
+        == 2
+    )
+    # Would otherwise FAIL as undeclared.
+    assert (
+        check.decide("full", passing, DECLARED, {}, deadline_expired=True).exit_code == 2
+    )
+    # Would otherwise be missing-expected exit 1.
+    empty = _healthy(all_connections={Connection("127.0.0.1", 1)})
+    assert check.decide("full", empty, DECLARED, {}, deadline_expired=True).exit_code == 2
+    # And would otherwise PASS with nothing observed at all.
+    assert check.decide("imports", empty, [], {}, deadline_expired=True).exit_code == 2
+
+
+def test_the_command_deadline_message_does_not_borrow_dns_wording() -> None:
+    """This branch is reached with zero external addresses observed.
+
+    Reusing the DNS message would tell the reader "external connections were
+    observed" about a run in which none were.
+    """
+    decision = check.decide(
+        "imports",
+        _healthy(all_connections={Connection("127.0.0.1", 1)}),
+        [],
+        {},
+        deadline_expired=True,
+    )
+    assert decision.exit_code == 2
+    assert "classification" in decision.headline
+    joined = " ".join(decision.notes).lower()
+    assert "external connections were observed" not in joined
+    assert "dns" not in joined
+
+
 # ================================ DNS completion must reach the verdict
 
 
@@ -1225,7 +1400,9 @@ def test_check_runs_and_reports_only_declared_destinations() -> None:
     assert payload["observer"]["canary_seen"] is True, "observer health not proven"
     assert payload["observer"]["successful_polls"] > 0
     assert payload["observer"]["failed_polls"] == []
-    assert payload["observer"]["timed_out"] is False
+    assert payload["observer"]["probe_timed_out"] is False
+    assert payload["command_deadline_expired"] is False
+    assert payload["dns_complete"] is True
     assert payload["undeclared"] == []
     assert payload["missing_expected"] == []
     assert [(e["dns_candidate"], e["port"]) for e in payload["external"]] == [

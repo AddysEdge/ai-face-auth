@@ -768,8 +768,21 @@ def decide(
     names: dict[str, str],
     dns_complete: bool = True,
     dns_reason: str | None = None,
+    deadline_expired: bool = False,
 ) -> Decision:
-    """Turn an observation into an exit code. Pure - no I/O, fully testable."""
+    """Turn an observation into an exit code. Pure - no I/O, fully testable.
+
+    Three timing states are kept distinct, because they fail for different
+    reasons and a reader needs to know which one happened:
+
+    * `outcome.timed_out` - the *probe* was cut short, so the child was not
+      watched for its full run.
+    * `dns_complete` - the *naming* step did not finish, so observed addresses
+      cannot be attributed either way.
+    * `deadline_expired` - the shared *command* budget ran out after the probe
+      and DNS but before the verdict. Nothing was necessarily missed; the run
+      simply has no remaining authority to conclude anything.
+    """
     notes: list[str] = []
 
     # ---- 1. Was the observer trustworthy for the WHOLE run? Nothing else
@@ -841,6 +854,22 @@ def decide(
                 "timeout looks identical to one the cache genuinely did not know. "
                 "Reporting either a pass or an undeclared-destination failure from "
                 "that would be guessing, so the run is indeterminate instead.",
+                "Raise --timeout if the environment is legitimately slower.",
+            ],
+        )
+
+    if deadline_expired:
+        # Deliberately says nothing about DNS or external connections: this
+        # branch is reached even when the probe observed nothing at all, and
+        # borrowing DNS wording here would describe a run that did not happen.
+        return Decision(
+            2,
+            "CANNOT OBSERVE: the command deadline expired before classification",
+            [
+                "The probe and any naming step finished, but the shared budget "
+                "ran out before a verdict was reached.",
+                "A conclusion drawn past the deadline is a conclusion nobody "
+                "bounded, so neither a pass nor a failure is reported.",
                 "Raise --timeout if the environment is legitimately slower.",
             ],
         )
@@ -959,16 +988,22 @@ def main(argv: list[str] | None = None) -> int:
             dns_complete = inference.complete
             dns_reason = inference.reason
 
-    # Re-check the one shared deadline immediately before classifying. Having
-    # had enough budget to *start* DNS says nothing about whether it finished
-    # inside the budget, and a verdict reached after the clock ran out is a
-    # verdict reached on evidence nobody bounded.
-    if dns_complete and addresses and deadline.expired():
-        dns_complete = False
-        dns_reason = "the deadline expired before classification could begin"
+    # Re-check the one shared deadline immediately before classifying, with no
+    # conditions attached. Having had enough budget to *start* the run says
+    # nothing about whether any was left to finish it, and this holds whether or
+    # not anything external was observed: a verdict reached after the clock ran
+    # out is a verdict reached on evidence nobody bounded. Tracked separately
+    # from DNS completion so the reported reason matches what actually happened.
+    command_deadline_expired = deadline.expired()
 
     decision = decide(
-        stage, outcome, allowed, names, dns_complete=dns_complete, dns_reason=dns_reason
+        stage,
+        outcome,
+        allowed,
+        names,
+        dns_complete=dns_complete,
+        dns_reason=dns_reason,
+        deadline_expired=command_deadline_expired,
     )
 
     print("\nobserver health:")
@@ -980,7 +1015,10 @@ def main(argv: list[str] | None = None) -> int:
         f"  (port {outcome.canary_port})"
     )
     print(f"  child reached READY      : {'YES' if outcome.reached_ready else 'NO'}")
-    print(f"  overall deadline expired : {'YES' if outcome.timed_out else 'no'}")
+    # Two different clocks, reported separately. The probe can finish cleanly
+    # and the command budget still run out afterwards.
+    print(f"  probe observation cut short : {'YES' if outcome.timed_out else 'no'}")
+    print(f"  command deadline expired    : {'YES' if command_deadline_expired else 'no'}")
 
     print(f"\nexternal endpoints observed (fact: IP:port): {len(decision.external)}")
     for record in decision.external:
@@ -1027,8 +1065,13 @@ def main(argv: list[str] | None = None) -> int:
                         "failed_polls": [k.name for k, _ in outcome.failed_polls],
                         "canary_seen": outcome.canary_seen,
                         "reached_ready": outcome.reached_ready,
-                        "timed_out": outcome.timed_out,
+                        # Probe-specific: the watch loop was cut short.
+                        "probe_timed_out": outcome.timed_out,
                     },
+                    "dns_complete": dns_complete,
+                    # Command-wide: the shared budget ran out before the verdict,
+                    # whether or not the probe itself was cut short.
+                    "command_deadline_expired": command_deadline_expired,
                     "external": decision.external,
                     "undeclared": decision.undeclared,
                     "missing_expected": decision.missing_expected,

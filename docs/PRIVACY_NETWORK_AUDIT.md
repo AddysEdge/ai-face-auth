@@ -445,7 +445,7 @@ nothing about whether anything was left afterwards. Below `MIN_RESOLVE_BUDGET`
 a lookup is not attempted at all, because spending a sliver of time would only
 let a timeout masquerade as a completed lookup.
 
-**Three defects here, all real, all fixed.**
+**Four defects here, all real, all fixed.**
 
 The first: every query was given a fixed 60-second timeout regardless of the
 budget, so a short deadline could be overrun by a full minute. The "hard
@@ -469,6 +469,31 @@ re-checked the clock. Reproduced: a healthy probe observing an undeclared
 produced a substantive **exit 1** after 2.11 seconds. Explicit completion
 tracking plus the post-DNS re-check fix it; the same case now returns exit 2 in
 2.12 seconds.
+
+The fourth, found in review after the third: the final deadline check was
+guarded by `and addresses`, so it only ran when the probe had observed something
+external. A healthy probe that observed *nothing* skipped the check entirely.
+Reproduced both ways at a 2-second budget consumed by the probe: imports-only
+returned **exit 0 PASS**, and FULL mode returned **exit 1** for the missing
+declared endpoint - both substantive verdicts reached after the clock ran out.
+The check is now unconditional, and both cases return exit 2.
+
+**Three timing states, kept distinct**, because they fail for different reasons
+and a reader needs to know which one happened:
+
+| State | Means |
+|---|---|
+| probe observation cut short | the watch loop ended early, so the child was not watched for its full run |
+| DNS inference incomplete | observed addresses cannot be attributed either way |
+| command deadline expired | the probe and any naming step finished, but the budget ran out before the verdict |
+
+The third borrows no wording from the second: it is reached even when nothing
+external was observed, so a message about "external connections" would describe
+a run that did not happen. Human output prints the probe clock and the command
+clock on separate lines - it previously printed the probe's state under a label
+that read like the command's, telling the reader the opposite of what happened -
+and the JSON carries `observer.probe_timed_out`, `dns_complete`, and
+`command_deadline_expired` separately.
 
 Measured end to end through `main`, with the real child, real queries, and the
 real DNS stage:

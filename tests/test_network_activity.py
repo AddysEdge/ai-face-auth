@@ -18,7 +18,9 @@ actually bounding a real run - use real child processes and really ask Windows.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import socket
 import subprocess
@@ -421,7 +423,12 @@ def test_a_matched_address_is_recorded_as_a_dns_candidate_not_an_observed_host()
     )
     assert decision.exit_code == 0
     assert decision.external == [
-        {"address": "172.217.113.4", "port": 443, "dns_candidate": "play.googleapis.com"}
+        {
+            "address": "172.217.113.4",
+            "port": 443,
+            "dns_candidate": "play.googleapis.com",
+            "classification": check.CLASSIFICATION_DECLARED,
+        }
     ]
     assert "hostname" not in decision.external[0]
 
@@ -441,7 +448,12 @@ def test_unresolved_address_is_treated_as_undeclared() -> None:
     decision = check.decide("full", outcome, DECLARED, names={})  # DNS gave nothing
     assert decision.exit_code == 1
     assert decision.undeclared == [
-        {"address": "172.217.113.4", "port": 443, "dns_candidate": None}
+        {
+            "address": "172.217.113.4",
+            "port": 443,
+            "dns_candidate": None,
+            "classification": check.CLASSIFICATION_UNDECLARED,
+        }
     ]
 
 
@@ -995,20 +1007,76 @@ def _probe_that_burns_the_budget(external: set | None = None):
     return probe
 
 
-def _run_main(monkeypatch, stage, probe, timeout="2.0", extra=()):
-    monkeypatch.setattr(
-        check,
-        "LANDMARKER",
-        REPO_ROOT / "models" / "face_landmarker.task"
-        if stage == "full"
-        else Path("no-such-model.task"),
-    )
+def _stage_marker(tmp_path: Path, stage: str) -> Path:
+    """A synthetic stage-selection marker, independent of real weights.
+
+    `main` chooses FULL vs IMPORTS ONLY purely from whether `check.LANDMARKER`
+    exists, so for these tests the file only has to exist or not. `run_probe` is
+    mocked throughout, so this marker is **never opened as a MediaPipe model** -
+    it is a fixture, not weights.
+
+    This helper previously pointed at the repository's real
+    `models/face_landmarker.task`, which is deliberately not committed. That made
+    the selected mode depend on untracked local state: locally the tests ran FULL
+    and passed, and in CI they silently ran IMPORTS ONLY, where
+    `test_an_unexpired_deadline_preserves_full_mode_missing_expected` got exit 0
+    instead of exit 1.
+    """
+    # Distinct names per stage, so the helper cannot be confused by call order:
+    # asking for "imports" must never find a marker a previous "full" call made.
+    if stage == "full":
+        marker = tmp_path / "present-stage-marker.task"
+        marker.write_bytes(b"")
+        return marker
+    return tmp_path / "absent-stage-marker.task"
+
+
+def _recording(probe):
+    """Wrap a probe so a test can assert which stage `main()` actually selected.
+
+    Without this, a test named "full mode" proves nothing: both modes return
+    exit 2 once the deadline has expired, so an expired-deadline test would pass
+    identically while silently running imports-only.
+    """
+    stages: list[str] = []
+
+    def wrapper(stage, **kwargs):
+        stages.append(stage)
+        return probe(stage, **kwargs)
+
+    wrapper.stages = stages
+    return wrapper
+
+
+def _run_main(monkeypatch, tmp_path, stage, probe, timeout="2.0", extra=()):
+    monkeypatch.setattr(check, "LANDMARKER", _stage_marker(tmp_path, stage))
     monkeypatch.setattr(check, "run_probe", probe)
     return check.main(["--timeout", timeout, *extra])
 
 
+def test_stage_selection_never_touches_the_repository_model(tmp_path: Path) -> None:
+    """Mode selection must not depend on untracked local state.
+
+    The repository's weights are deliberately not committed, so a helper that
+    pointed at them made these tests pass locally and behave differently in CI.
+    The marker lives entirely inside pytest's tmp_path and is an empty file -
+    a stage-selection fixture, never a model that could be opened.
+    """
+    full_marker = _stage_marker(tmp_path, "full")
+    imports_marker = _stage_marker(tmp_path, "imports")
+
+    for marker in (full_marker, imports_marker):
+        assert tmp_path in marker.parents, "the marker escaped the temporary directory"
+        assert marker != LANDMARKER
+        assert "models" not in marker.parts
+
+    assert full_marker.exists()
+    assert full_marker.stat().st_size == 0, "the marker must never be real weights"
+    assert not imports_marker.exists()
+
+
 def test_imports_only_with_no_addresses_cannot_pass_after_the_deadline(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The reported defect, half one.
 
@@ -1016,14 +1084,16 @@ def test_imports_only_with_no_addresses_cannot_pass_after_the_deadline(
     that observed nothing external skipped the check entirely and reported a
     clean PASS on a clock that had already run out.
     """
-    assert _run_main(monkeypatch, "imports", _probe_that_burns_the_budget()) == 2
+    probe = _recording(_probe_that_burns_the_budget())
+    assert _run_main(monkeypatch, tmp_path, "imports", probe) == 2
+    assert probe.stages == ["imports"], "this test must actually exercise imports-only"
     out = capsys.readouterr().out
     assert "PASS" not in out
     assert "command deadline expired    : YES" in out
 
 
 def test_full_mode_with_no_addresses_cannot_report_missing_expected_after_the_deadline(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The reported defect, half two.
 
@@ -1031,14 +1101,19 @@ def test_full_mode_with_no_addresses_cannot_report_missing_expected_after_the_de
     declared endpoint - a claim about what the run observed, made after the run
     had lost the authority to make it.
     """
-    assert _run_main(monkeypatch, "full", _probe_that_burns_the_budget()) == 2
+    probe = _recording(_probe_that_burns_the_budget())
+    assert _run_main(monkeypatch, tmp_path, "full", probe) == 2
+    # Without this the test would pass while silently running imports-only:
+    # both modes return exit 2 once the deadline has expired.
+    assert probe.stages == ["full"], "this test must actually exercise FULL mode"
     out = capsys.readouterr().out
+    assert "mode: FULL" in out
     assert "INDETERMINATE: a declared destination" not in out
     assert "command deadline expired    : YES" in out
 
 
 def test_the_expired_command_deadline_is_reported_truthfully(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Human output printed `outcome.timed_out`, which is a different clock.
 
@@ -1046,17 +1121,21 @@ def test_the_expired_command_deadline_is_reported_truthfully(
     surviving, and printing the first under a label that reads like the second
     told the reader the opposite of what happened.
     """
-    _run_main(monkeypatch, "imports", _probe_that_burns_the_budget())
+    _run_main(monkeypatch, tmp_path, "imports", _probe_that_burns_the_budget())
     out = capsys.readouterr().out
     assert "probe observation cut short : no" in out
     assert "command deadline expired    : YES" in out
 
 
 def test_json_distinguishes_the_probe_clock_from_the_command_clock(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     exit_code = _run_main(
-        monkeypatch, "imports", _probe_that_burns_the_budget(), extra=("--json",)
+        monkeypatch,
+        tmp_path,
+        "imports",
+        _probe_that_burns_the_budget(),
+        extra=("--json",),
     )
     out = capsys.readouterr().out
     payload, _end = json.JSONDecoder().raw_decode(out[out.index("{") :])
@@ -1066,11 +1145,9 @@ def test_json_distinguishes_the_probe_clock_from_the_command_clock(
     assert payload["dns_complete"] is True  # DNS was never the problem here
 
 
-def test_an_unexpired_deadline_still_lets_imports_only_pass(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The guard must not turn every run into exit 2."""
-    quick = lambda stage, **kw: check.ProbeOutcome(  # noqa: E731
+def _quick_probe(stage, **_kw):
+    """A healthy probe that returns immediately with no external traffic."""
+    return check.ProbeOutcome(
         all_connections={Connection("127.0.0.1", 1)},
         canary_seen=True,
         canary_port=1,
@@ -1078,22 +1155,29 @@ def test_an_unexpired_deadline_still_lets_imports_only_pass(
         reached_ready=True,
         child_pid=999,
     )
-    assert _run_main(monkeypatch, "imports", quick, timeout="120") == 0
+
+
+def test_an_unexpired_deadline_still_lets_imports_only_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The guard must not turn every run into exit 2."""
+    probe = _recording(_quick_probe)
+    assert _run_main(monkeypatch, tmp_path, "imports", probe, timeout="120") == 0
+    assert probe.stages == ["imports"]
 
 
 def test_an_unexpired_deadline_preserves_full_mode_missing_expected(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """FULL mode must still notice a declared endpoint that went missing."""
-    quick = lambda stage, **kw: check.ProbeOutcome(  # noqa: E731
-        all_connections={Connection("127.0.0.1", 1)},
-        canary_seen=True,
-        canary_port=1,
-        successful_polls=5,
-        reached_ready=True,
-        child_pid=999,
-    )
-    assert _run_main(monkeypatch, "full", quick, timeout="120") == 1
+    """FULL mode must still notice a declared endpoint that went missing.
+
+    This is the test the model-dependent helper broke: in CI it silently ran
+    imports-only, where a missing declared endpoint is not a mismatch, and got
+    exit 0.
+    """
+    probe = _recording(_quick_probe)
+    assert _run_main(monkeypatch, tmp_path, "full", probe, timeout="120") == 1
+    assert probe.stages == ["full"], "this test must actually exercise FULL mode"
 
 
 def test_an_expired_command_deadline_blocks_both_substantive_verdicts() -> None:
@@ -1330,6 +1414,238 @@ def test_a_sliver_of_budget_is_not_enough_to_start_a_lookup(
     mapping, reason = check._forward_resolve({"a.test"}, {"203.0.113.7"}, sliver)
     assert mapping == {}
     assert reason is not None
+
+
+# ================ observed endpoints survive an indeterminate verdict
+
+
+UNCLASSIFIED = "unclassified"
+
+
+def _observing_probe(*endpoints, **outcome_kwargs):
+    """A healthy probe that observed the given external endpoints."""
+    conns = {Connection("127.0.0.1", 1)} | {
+        Connection(addr, port) for addr, port in endpoints
+    }
+    base = dict(
+        all_connections=conns,
+        canary_seen=True,
+        canary_port=1,
+        successful_polls=3,
+        reached_ready=True,
+        child_pid=999,
+    )
+    base.update(outcome_kwargs)
+    return lambda stage, **_kw: check.ProbeOutcome(**base)
+
+
+def _main_json(monkeypatch, tmp_path, stage, probe, timeout="120"):
+    """Run main() with --json and return (exit_code, stdout, parsed payload)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = _run_main(
+            monkeypatch, tmp_path, stage, probe, timeout=timeout, extra=("--json",)
+        )
+    out = buf.getvalue()
+    payload, _end = json.JSONDecoder().raw_decode(out[out.index("{") :])
+    return code, out, payload
+
+
+def _assert_visible_but_unclassified(out, payload, expected):
+    """Every expected IP:port is present, unclassified, and not a verdict."""
+    assert payload["external_observed_count"] == len(expected)
+    assert len(payload["external"]) == len(expected)
+    assert payload["undeclared"] == [], "an indeterminate run must claim nothing"
+    seen = {(r["address"], r["port"]): r for r in payload["external"]}
+    assert set(seen) == set(expected)
+    for (address, port), record in seen.items():
+        assert record["classification"] == UNCLASSIFIED
+        # Visible as a raw fact in the human output too.
+        assert f"{address}:{port}" in out
+        assert "unclassified" in out
+    # Never rendered as a verdict.
+    assert "[  declared  ]" not in out
+    assert "UNDECLARED" not in out
+    assert "external endpoints observed (fact: IP:port): 0" not in out
+
+
+def test_a_failed_poll_keeps_the_observed_endpoint_visible_and_unclassified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Exit 2 must not erase what was actually seen.
+
+    Every exit-2 return used to construct a Decision with no `external` at all,
+    so the program printed "external endpoints observed: 0" about a run that had
+    observed one. The endpoint is a fact; only its classification is in doubt.
+    """
+    probe = _observing_probe(
+        ("203.0.113.7", 443),
+        failed_polls=[(check.ObserverFailure.TIMEOUT, "simulated")],
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 2
+    _assert_visible_but_unclassified(out, payload, {("203.0.113.7", 443)})
+
+
+def test_an_expired_command_deadline_keeps_the_observed_endpoint_visible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    probe = _observing_probe(("203.0.113.7", 443))
+
+    def burns(stage, **kwargs):
+        deadline = kwargs.get("deadline")
+        while deadline is not None and not deadline.expired():
+            time.sleep(0.01)
+        return probe(stage, **kwargs)
+
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", burns, timeout="2.0")
+    assert code == 2
+    _assert_visible_but_unclassified(out, payload, {("203.0.113.7", 443)})
+
+
+def test_incomplete_dns_keeps_every_endpoint_visible_including_a_partial_mapping(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A partial mapping is the most dangerous shape: it looks like evidence.
+
+    One address resolved, one did not. Neither may be reported as a verdict, and
+    the resolved one's name is inference, not an observed hostname.
+    """
+    probe = _observing_probe(("203.0.113.7", 443), ("203.0.113.8", 443))
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference(
+            {"203.0.113.7": "play.googleapis.com"},
+            complete=False,
+            reason="resolving exceeded its budget",
+        ),
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 2
+    _assert_visible_but_unclassified(
+        out, payload, {("203.0.113.7", 443), ("203.0.113.8", 443)}
+    )
+    by_addr = {r["address"]: r for r in payload["external"]}
+    # The candidate is preserved where inference produced one, and absent where
+    # it did not - but neither becomes a classification.
+    assert by_addr["203.0.113.7"]["dns_candidate"] == "play.googleapis.com"
+    assert by_addr["203.0.113.8"]["dns_candidate"] is None
+    assert "DNS INFERENCE" in out
+
+
+def test_a_fatal_observer_failure_retains_already_observed_facts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    probe = _observing_probe(
+        ("203.0.113.7", 443),
+        fatal=(check.ObserverFailure.QUERY_FAILED, "cmdlet missing"),
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 2
+    _assert_visible_but_unclassified(out, payload, {("203.0.113.7", 443)})
+
+
+def test_a_run_with_no_external_endpoints_still_reports_zero_honestly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Preserving evidence must not invent it."""
+    probe = _observing_probe(failed_polls=[(check.ObserverFailure.TIMEOUT, "x")])
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 2
+    assert payload["external_observed_count"] == 0
+    assert payload["external"] == []
+    assert "external endpoints observed (fact: IP:port): 0" in out
+
+
+def test_a_completed_run_still_classifies_a_declared_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    declared = check.load_allowlist()[0]
+    probe = _observing_probe(("172.217.113.4", 443))
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference(
+            {"172.217.113.4": declared["hostname"]}, complete=True
+        ),
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 0
+    assert payload["external_observed_count"] == 1
+    assert payload["external"][0]["classification"] == check.CLASSIFICATION_DECLARED
+    assert payload["undeclared"] == []
+    assert "declared" in out
+
+
+def test_a_completed_run_still_fails_on_an_unmatched_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    probe = _observing_probe(("203.0.113.9", 443))
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference({"203.0.113.9": "evil.test"}, complete=True),
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 1
+    assert payload["external"][0]["classification"] == check.CLASSIFICATION_UNDECLARED
+    assert [(r["address"], r["port"]) for r in payload["undeclared"]] == [
+        ("203.0.113.9", 443)
+    ]
+    assert "UNDECLARED" in out
+
+
+def test_human_and_json_output_agree_on_every_observed_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The two renderings must not be able to disagree."""
+    probe = _observing_probe(
+        ("203.0.113.7", 443),
+        ("203.0.113.8", 8443),
+        failed_polls=[(check.ObserverFailure.TIMEOUT, "simulated")],
+    )
+    monkeypatch.setattr(
+        check,
+        "dns_inference_for",
+        lambda *_a, **_k: check.DnsInference(
+            {"203.0.113.7": "candidate.test"}, complete=True
+        ),
+    )
+    code, out, payload = _main_json(monkeypatch, tmp_path, "imports", probe)
+    assert code == 2
+
+    # Count agrees.
+    header = next(
+        ln for ln in out.splitlines() if "external endpoints observed" in ln
+    )
+    assert header.rstrip().endswith(str(payload["external_observed_count"]))
+    assert payload["external_observed_count"] == 2
+
+    # Address, port, classification and DNS-candidate status all agree.
+    rendered = [ln for ln in out.splitlines() if ln.strip().startswith("[")]
+    assert len(rendered) == 2
+    for record in payload["external"]:
+        line = next(
+            ln for ln in rendered if f"{record['address']}:{record['port']}" in ln
+        )
+        assert record["classification"] in line
+        if record["dns_candidate"]:
+            assert record["dns_candidate"] in line
+        else:
+            assert "(no DNS candidate)" in line
+
+
+def test_the_decision_never_reports_an_unclassified_record_as_undeclared() -> None:
+    """`undeclared` is the evidence behind exit 1 and must stay empty on exit 2."""
+    outcome = _healthy(
+        all_connections={Connection("203.0.113.7", 443), Connection("127.0.0.1", 1)},
+        failed_polls=[(ObserverFailure.TIMEOUT, "x")],
+    )
+    decision = check.decide("full", outcome, DECLARED, {})
+    assert decision.exit_code == 2
+    assert decision.undeclared == []
+    assert [r["classification"] for r in decision.external] == [UNCLASSIFIED]
 
 
 # ==================================================== the shipped child source

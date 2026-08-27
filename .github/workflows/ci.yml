@@ -94,6 +94,26 @@ jobs:
       - name: Test ${{ matrix.config }}
         run: ctest --test-dir native/build -C ${{ matrix.config }} --output-on-failure
 
+      # The CollectingSink race (issue #7) surfaced as a segfault in the
+      # aggregate in-process runner that appeared once and then passed on
+      # re-run. A single green run would not have caught it, so Debug repeats
+      # the aggregate runner and the concurrency tests a bounded number of
+      # times. Debug only, because the crash was Debug-specific and layout
+      # sensitive; ~15 iterations of a ~2s runner costs well under a minute.
+      # Bounded on purpose - never an until-fail loop.
+      - name: Repeat aggregate and concurrency tests (Debug only)
+        if: matrix.config == 'Debug'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          for ($i = 1; $i -le 15; $i++) {
+            Write-Host "--- iteration $i/15 ---"
+            ctest --test-dir native/build -C Debug --output-on-failure `
+              -R 'protocol\.all_registered_tests|collecting_sink|concurrent_writers|snapshot_taken_while_writers|share_one_collecting_sink'
+            if ($LASTEXITCODE -ne 0) { throw "repeat iteration $i failed" }
+          }
+          Write-Host "15/15 iterations passed."
+
   # Belt-and-braces on top of .gitignore: an ignore rule protects against
   # accident, this protects against a deliberate `git add -f`.
   repo-hygiene:

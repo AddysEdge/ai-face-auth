@@ -24,7 +24,7 @@ tested now, before any privileged component is written.
 | `include/faceauth/ipc/transport.hpp`, `src/transport_*.cpp` | In-memory transport, and a user-owned loopback named pipe |
 | `include/faceauth/ipc/fake_peer.hpp`, `src/fake_peer.cpp` | Fake client and fake server |
 | `tools/fake_peer_main.cpp` | `faceauth_ipc_fake` - runs one protocol exchange |
-| `tests/test_protocol.cpp` | 70 protocol test cases |
+| `tests/test_protocol.cpp` | 74 protocol test cases |
 | `tests/test_named_pipe.cpp` | 8 Windows named-pipe test cases, all with CTest timeouts |
 
 ## What is deliberately absent
@@ -141,10 +141,13 @@ Plus service-restart behaviour, replay-cache eviction and its fail-closed full
 state, result-lifetime capping, opaque-field length caps, CSPRNG quality, and
 the privacy properties of the diagnostics layer.
 
-**Totals on Windows:** 70 named protocol tests + 8 named-pipe tests + 1
+**Totals on Windows:** 74 named protocol tests + 8 named-pipe tests + 1
 aggregate entry (`protocol.all_registered_tests`) + 3 fake-peer entries =
-**82 CTest entries**. On a non-Windows host the 8 named-pipe entries and 1
-fake-peer entry are not registered, leaving 73.
+**86 CTest entries**. On a non-Windows host the 8 named-pipe entries and 1
+fake-peer entry are not registered, leaving 77.
+
+Four of the protocol tests cover `CollectingSink`'s concurrency contract - see
+"The diagnostics sink is shared, and therefore synchronised" below.
 
 The lists in `CMakeLists.txt` are generated from, and cross-checked against, the
 `FACEAUTH_TEST(...)` declarations in the sources - a test that exists in a
@@ -203,6 +206,45 @@ proves it with a backend that blocks inside `verify()`.
 
 It does **not** model a production accept loop, a queue, or any fairness
 policy. Those are Phase 3 concerns, and this scaffold does not claim them.
+
+## The diagnostics sink is shared, and therefore synchronised
+
+`CollectingSink` is routinely handed to **both** peers of an exchange: the
+client runs on one thread, the server on another, and both call `emit()` into
+the sink they were given. `native/tests/test_named_pipe.cpp` does exactly that.
+
+It used to be unsafe. `write()` was a bare `lines_.push_back(line)` with no
+synchronisation, and `lines()` returned `const std::vector<std::string>&` - a
+reference into storage another thread could still be growing. Two threads
+mutating one `std::vector` is undefined behaviour, and locking `write()` alone
+would have left the read path racing.
+
+The contract is now explicit and enforced by the type:
+
+- `DiagnosticSink::write()` is documented as safe to call concurrently.
+- `CollectingSink` holds a private `std::mutex` guarding **every** mutation and
+  **every** read.
+- There is no accessor that exposes the container. `snapshot()` returns a copy,
+  so nothing escapes the lock; `size()`, `empty()`, and `clear()` are
+  synchronised too.
+- The lock is never held while calling anything outside the class.
+
+Four tests pin this (`concurrent_writers_to_one_collecting_sink_lose_nothing`,
+`a_snapshot_taken_while_writers_run_is_internally_consistent`,
+`both_fake_peers_can_share_one_collecting_sink`,
+`collecting_sink_clear_and_size_are_consistent`). They release their threads
+through an explicit gate rather than sleeping, and assert exact counts with
+every record present exactly once.
+
+**What the evidence does and does not say.** The race was established by code
+inspection, and it is removed by construction - the mutex is what makes the
+undefined behaviour impossible, not the tests. The earlier intermittent
+`protocol.all_registered_tests` segfault (issue #7) is *consistent* with this
+race, but no crash stack, faulting address, or race-detector output was ever
+captured, so it is not proven that the crash originated at `lines_.push_back`.
+CI repeats the aggregate runner and these tests 15 times in Debug, which is
+supporting evidence against regression - not proof about the historical crash,
+and not a claim that the rest of the native code is race-free.
 
 ## Provenance and licensing
 

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1048,7 +1049,179 @@ FACEAUTH_TEST(end_to_end_exchange_over_in_memory_transport) {
     CHECK(result.completed);
     CHECK(result.outcome == Outcome::Allow);
     CHECK(result.final_state == ClientState::Consumed);
-    CHECK(!client_diagnostics.lines().empty());
+    CHECK(!client_diagnostics.empty());
+}
+
+// ---------------------------------------------------------------------------
+// CollectingSink concurrency (issue #7)
+//
+// A sink is routinely shared: two peers on two threads emit into the sink they
+// were handed. CollectingSink::write() used to be an unsynchronised
+// vector::push_back, and lines() handed out a reference into storage a writer
+// could still be growing. Both are undefined behaviour, and both are now
+// removed by construction rather than made less likely.
+//
+// These tests pin that behaviour. They do not, and cannot, prove the absence of
+// a race - the mutex does that. Threads are released together by an explicit
+// gate, never by sleeping.
+// ---------------------------------------------------------------------------
+
+FACEAUTH_TEST(concurrent_writers_to_one_collecting_sink_lose_nothing) {
+    constexpr int kWriters = 8;
+    constexpr int kLinesPerWriter = 250;
+
+    CollectingSink sink;
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+
+    std::vector<std::thread> writers;
+    writers.reserve(kWriters);
+    for (int writer = 0; writer < kWriters; ++writer) {
+        writers.emplace_back([&sink, &ready, &go, writer]() {
+            // Arrive, then wait for every other writer. This is the contention
+            // the old code could not survive; a sleep would only make it
+            // likely, and unreliably so.
+            ready.fetch_add(1);
+            while (!go.load()) {
+            }
+            for (int line = 0; line < kLinesPerWriter; ++line) {
+                sink.write("w" + std::to_string(writer) + "-l" + std::to_string(line));
+            }
+        });
+    }
+
+    while (ready.load() < kWriters) {
+    }
+    go.store(true);
+    for (std::thread& writer : writers) {
+        writer.join();
+    }
+
+    // Every writer has joined, so this is the complete, final state.
+    const std::vector<std::string> lines = sink.snapshot();
+    CHECK_EQ(lines.size(), static_cast<std::size_t>(kWriters * kLinesPerWriter));
+
+    // Every expected record present exactly once, and nothing corrupted: a
+    // torn or lost push_back would show up as a missing or duplicated key.
+    std::map<std::string, int> counts;
+    for (const std::string& line : lines) {
+        counts[line] += 1;
+    }
+    CHECK_EQ(counts.size(), static_cast<std::size_t>(kWriters * kLinesPerWriter));
+    for (int writer = 0; writer < kWriters; ++writer) {
+        for (int line = 0; line < kLinesPerWriter; ++line) {
+            const std::string expected =
+                "w" + std::to_string(writer) + "-l" + std::to_string(line);
+            CHECK_EQ(counts[expected], 1);
+        }
+    }
+}
+
+FACEAUTH_TEST(a_snapshot_taken_while_writers_run_is_internally_consistent) {
+    constexpr int kWriters = 4;
+    constexpr int kLinesPerWriter = 200;
+
+    CollectingSink sink;
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::atomic<bool> writing{true};
+
+    std::vector<std::thread> writers;
+    writers.reserve(kWriters);
+    for (int writer = 0; writer < kWriters; ++writer) {
+        writers.emplace_back([&sink, &ready, &go, writer]() {
+            ready.fetch_add(1);
+            while (!go.load()) {
+            }
+            for (int line = 0; line < kLinesPerWriter; ++line) {
+                sink.write("w" + std::to_string(writer) + "-l" + std::to_string(line));
+            }
+        });
+    }
+
+    // Reading concurrently with writing is part of the contract, so it is
+    // tested as such rather than only after the writers have finished.
+    std::size_t observed_snapshots = 0;
+    std::size_t previous_size = 0;
+    bool sizes_never_shrank = true;
+    bool every_record_well_formed = true;
+
+    std::thread reader([&]() {
+        while (writing.load()) {
+            const std::vector<std::string> shot = sink.snapshot();
+            observed_snapshots += 1;
+            if (shot.size() < previous_size) {
+                sizes_never_shrank = false;
+            }
+            previous_size = shot.size();
+            for (const std::string& line : shot) {
+                // A snapshot must never contain a partially written string.
+                if (line.empty() || line[0] != 'w' || line.find("-l") == std::string::npos) {
+                    every_record_well_formed = false;
+                }
+            }
+        }
+    });
+
+    while (ready.load() < kWriters) {
+    }
+    go.store(true);
+    for (std::thread& writer : writers) {
+        writer.join();
+    }
+    writing.store(false);
+    reader.join();
+
+    CHECK(observed_snapshots > 0);
+    CHECK(sizes_never_shrank);
+    CHECK(every_record_well_formed);
+    CHECK_EQ(sink.size(), static_cast<std::size_t>(kWriters * kLinesPerWriter));
+}
+
+FACEAUTH_TEST(both_fake_peers_can_share_one_collecting_sink) {
+    // The exact shape that made the named-pipe exchange test unsafe, reduced to
+    // the in-memory transport so it runs on every platform.
+    auto pair = make_in_memory_pair();
+    ScriptedVerificationBackend backend({VerificationDecision{Outcome::Allow, 0}});
+    ReplayCache cache;
+    SteadyClock mono_clock;
+    CollectingSink shared_diagnostics;
+
+    std::thread server_thread([&]() {
+        run_fake_server(*pair.second, backend, cache, mono_clock, shared_diagnostics, 3000);
+    });
+
+    FakeClientOptions options;
+    const FakeClientResult result =
+        run_fake_client(*pair.first, options, mono_clock, shared_diagnostics);
+    server_thread.join();
+
+    CHECK(result.completed);
+    CHECK(result.outcome == Outcome::Allow);
+
+    // Both peers emitted into the same sink and every line survived intact.
+    const std::vector<std::string> lines = shared_diagnostics.snapshot();
+    CHECK(lines.size() >= 2);
+    for (const std::string& line : lines) {
+        CHECK(!line.empty());
+    }
+}
+
+FACEAUTH_TEST(collecting_sink_clear_and_size_are_consistent) {
+    CollectingSink sink;
+    CHECK(sink.empty());
+    CHECK_EQ(sink.size(), static_cast<std::size_t>(0));
+
+    sink.write("one");
+    sink.write("two");
+    CHECK(!sink.empty());
+    CHECK_EQ(sink.size(), static_cast<std::size_t>(2));
+    CHECK_EQ(sink.snapshot().size(), static_cast<std::size_t>(2));
+
+    sink.clear();
+    CHECK(sink.empty());
+    CHECK_EQ(sink.size(), static_cast<std::size_t>(0));
+    CHECK(sink.snapshot().empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,7 +1263,7 @@ FACEAUTH_TEST(diagnostics_reject_forbidden_field_names) {
     DiagnosticEvent bad("leak_attempt");
     bad.add("embedding", "0.12,0.98,0.31");
     CHECK(!emit(sink, bad));
-    CHECK(sink.lines().empty());
+    CHECK(sink.empty());
 }
 
 FACEAUTH_TEST(diagnostics_allow_opaque_identifier_fields) {

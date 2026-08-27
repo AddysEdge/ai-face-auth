@@ -18,7 +18,9 @@
 #ifndef FACEAUTH_IPC_DIAGNOSTICS_HPP
 #define FACEAUTH_IPC_DIAGNOSTICS_HPP
 
+#include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -68,6 +70,12 @@ private:
 class DiagnosticSink {
 public:
     virtual ~DiagnosticSink() = default;
+
+    // Implementations must tolerate concurrent calls from multiple threads.
+    // A sink is routinely shared: a client and a server peer run on different
+    // threads and both emit into the sink they were handed. Leaving that
+    // unstated is what allowed CollectingSink to ship with an unsynchronised
+    // container behind it.
     virtual void write(const std::string& line) = 0;
 };
 
@@ -75,13 +83,46 @@ public:
 // the event was rejected.
 bool emit(DiagnosticSink& sink, const DiagnosticEvent& event);
 
+// Thread-safe collecting sink.
+//
+// Every member is safe to call concurrently from any number of threads. One
+// mutex guards both mutation and reading, and it is private to the class, so
+// callers cannot get the policy wrong.
+//
+// `snapshot()` returns a copy on purpose. The previous accessor returned
+// `const std::vector<std::string>&` - a reference into storage another thread
+// could still be growing - so locking only `write()` would have left the read
+// path racing. There is no accessor that exposes the container itself, and the
+// lock is never held while calling anything outside this class.
 class CollectingSink : public DiagnosticSink {
 public:
-    void write(const std::string& line) override { lines_.push_back(line); }
-    const std::vector<std::string>& lines() const { return lines_; }
-    void clear() { lines_.clear(); }
+    void write(const std::string& line) override {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        lines_.push_back(line);
+    }
+
+    // A consistent point-in-time copy. Safe to call while writers are running.
+    std::vector<std::string> snapshot() const {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        return lines_;
+    }
+
+    std::size_t size() const {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        return lines_.size();
+    }
+
+    bool empty() const { return size() == 0; }
+
+    void clear() {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        lines_.clear();
+    }
 
 private:
+    // Mutable so the const accessors above can lock it. The logical state of
+    // the sink is unchanged by reading it.
+    mutable std::mutex mutex_;
     std::vector<std::string> lines_;
 };
 

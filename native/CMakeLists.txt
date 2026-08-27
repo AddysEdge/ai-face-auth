@@ -180,6 +180,10 @@ set(FACEAUTH_TEST_NAMES
     throwing_backend_fails_closed_and_releases_the_gate
     a_throwing_backend_does_not_block_a_later_verification
     a_synchronous_backend_holds_its_worker_until_it_returns
+    concurrent_writers_to_one_collecting_sink_lose_nothing
+    a_snapshot_taken_while_writers_run_is_internally_consistent
+    both_fake_peers_can_share_one_collecting_sink
+    collecting_sink_clear_and_size_are_consistent
 )
 
 # Windows-only. These drive real named pipes against deliberately unresponsive

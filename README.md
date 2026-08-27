@@ -241,8 +241,8 @@ cmake --build native/build --config Release
 ctest --test-dir native/build -C Release --output-on-failure
 ```
 
-Warnings are errors (`/W4 /permissive- /WX`). The suite is **82 CTest entries
-on Windows**: 70 named protocol tests, 8 named-pipe tests (each with an explicit
+Warnings are errors (`/W4 /permissive- /WX`). The suite is **86 CTest entries
+on Windows**: 74 named protocol tests, 8 named-pipe tests (each with an explicit
 CTest timeout, so a blocking-I/O regression fails rather than hangs), 1
 aggregate entry, and 3 fake-peer entries. See
 [`native/README.md`](native/README.md) for what the scaffold is, what it

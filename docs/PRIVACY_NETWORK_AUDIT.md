@@ -514,7 +514,37 @@ So the wall-clock ceiling for a run is the budget plus normal process-cleanup
 time, not the budget exactly. An abandoned `getaddrinfo` thread may also outlive
 the call, but it is a daemon thread and cannot delay exit.
 
-### 4.4 What a destination name does and does not mean
+### 4.4 Observation and classification are separate
+
+An endpoint that was seen stays seen, whatever happens to the verdict.
+
+Every external `IP:port` in the probe's result is reported in both the human
+output and the JSON, **including on an exit-2 run**, each carrying an explicit
+classification:
+
+| Classification | Means |
+|---|---|
+| `declared` | matched an allowlist entry |
+| `undeclared` | did not match - this is the evidence behind exit 1 |
+| `unclassified` | **observed, but this run lost the standing to classify it.** Neither declared nor undeclared |
+
+The `undeclared` list holds only genuinely-classified entries and is empty on an
+indeterminate run, so "declared" must never be inferred from absence there. The
+renderer reads the classification field directly; deriving it from
+undeclared-list membership is what previously made this wrong.
+
+This was a real defect. Every exit-2 return built its Decision before the
+endpoint records existed, so a run that observed `203.0.113.7:443` and then hit
+a failed poll printed `external endpoints observed (fact: IP:port): 0`. That is
+not a hedge, it is a false statement about what was seen: the observation was
+sound and only the classification was in doubt.
+
+The evidence boundary is unchanged by this. The observed fact is still the
+`IP:port`; `dns_candidate` is still DNS inference and never proof of the host
+contacted; TLS SNI is still not inspected; payload contents are still neither
+observed nor decrypted.
+
+### 4.5 What a destination name does and does not mean
 
 This check reads **IP address and port**. That is the observed fact. Everything
 else about a destination's identity is inference, and the code and output now
@@ -555,7 +585,7 @@ tracing - each of which would mean certificate installation or persistent system
 configuration. That is out of scope here, and the check is documented as an
 IP-level endpoint regression detector rather than as hostname attribution.
 
-### 4.5 The trap that defeated the first version
+### 4.6 The trap that defeated the first version
 
 The parent must poll the child's *real* PID, which is not necessarily
 `Popen.pid`. Several virtualenv layouts - `uv`-created environments among them -
@@ -570,11 +600,15 @@ That failure is also why the canary exists. Polling the right PID fixed the
 symptom; only an independent proof that the observer can see *something*
 prevents the next variant of the same mistake.
 
-### 4.6 Honest limits, stated up front
+### 4.7 Honest limits, stated up front
 
 - It observes **TCP connection endpoints**, not payloads. It proves *where*
   traffic goes, never *what* is in it.
 - It is **Windows-only**, because it depends on `Get-NetTCPConnection`.
+- Its unit tests are deterministic and never touch model weights: mode
+  selection uses a synthetic marker under pytest's `tmp_path`. The tests that
+  genuinely need the real weights are separate, marked `@realmodel`, and skip
+  when the weights are absent - which is why CI reports model-gated skips.
 - In CI, model weights are deliberately not committed, so the MediaPipe session
   stage is skipped and only the **import surface** is exercised. That is still a
   genuine regression check - a dependency that phones home on import fails it -
@@ -587,7 +621,7 @@ prevents the next variant of the same mistake.
   proof of absence.
 - **It reads IP and port, not hostnames.** A name in the output is DNS
   inference. Another service sharing a declared IP and port is indistinguishable
-  to this check. See section 4.4.
+  to this check. See section 4.5.
 - Naming a destination depends on DNS. An address that neither the cache nor a
   declared hostname accounts for is reported as unresolved and treated as
   undeclared, which fails the check. A DNS *failure* - as opposed to a

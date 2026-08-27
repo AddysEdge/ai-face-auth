@@ -751,14 +751,57 @@ def run_probe(stage: str, **kwargs: Any) -> ProbeOutcome:
 # ------------------------------------------------------------------- decision
 
 
+# Classification of one observed endpoint. Observation and classification are
+# separate steps, and the third value exists because they can come apart: the
+# endpoint was really seen, and the run lost the standing to say what it was.
+CLASSIFICATION_DECLARED = "declared"
+CLASSIFICATION_UNDECLARED = "undeclared"
+CLASSIFICATION_UNCLASSIFIED = "unclassified"
+
+
 @dataclass
 class Decision:
+    """A verdict, plus every external endpoint that was actually observed.
+
+    `external` always carries **every** entry in `outcome.external`, including
+    on an exit-2 run, because those endpoints are observed facts and a failed
+    classification does not unobserve them. Each record carries an explicit
+    `classification`; on an indeterminate run every record is
+    `unclassified`, which is neither `declared` nor `undeclared`.
+
+    `undeclared` holds only records that were genuinely classified as
+    undeclared - it is the evidence behind an exit 1 and is empty on exit 2.
+    Never derive "declared" from absence here; read `classification`.
+    """
+
     exit_code: int
     headline: str
     notes: list[str] = field(default_factory=list)
     external: list[dict[str, Any]] = field(default_factory=list)
     undeclared: list[dict[str, Any]] = field(default_factory=list)
     missing_expected: list[str] = field(default_factory=list)
+
+
+def observed_records(
+    outcome: ProbeOutcome, names: dict[str, str]
+) -> list[dict[str, Any]]:
+    """The raw observed facts: every external `IP:port`, classified or not.
+
+    `dns_candidate` is filled only where inference actually produced a name. It
+    is DNS inference, never proof of the host contacted - this check reads IP
+    and port and never inspects TLS SNI.
+    """
+    return [
+        {
+            "address": conn.remote_address,
+            "port": conn.remote_port,
+            "dns_candidate": names.get(conn.remote_address),
+            "classification": CLASSIFICATION_UNCLASSIFIED,
+        }
+        for conn in sorted(
+            outcome.external, key=lambda c: (c.remote_address, c.remote_port)
+        )
+    ]
 
 
 def decide(
@@ -785,14 +828,28 @@ def decide(
     """
     notes: list[str] = []
 
+    # Observation is settled before any verdict is considered. Whatever happens
+    # below, these endpoints were seen, and every indeterminate return carries
+    # them through unclassified rather than dropping them.
+    observed = observed_records(outcome, names)
+
+    def indeterminate(headline: str, detail: list[str]) -> Decision:
+        extra = list(detail)
+        if observed:
+            extra.append(
+                f"{len(observed)} external endpoint(s) were observed and remain "
+                "listed above as UNCLASSIFIED - seen, but neither confirmed "
+                "against the allowlist nor reported as undeclared."
+            )
+        return Decision(2, headline, extra, external=observed)
+
     # ---- 1. Was the observer trustworthy for the WHOLE run? Nothing else
     # matters until that is settled, and a gap anywhere is disqualifying.
     if outcome.fatal is not None:
         kind, detail = outcome.fatal
-        return Decision(2, f"CANNOT OBSERVE: {kind.value}", [detail] if detail else [])
+        return indeterminate(f"CANNOT OBSERVE: {kind.value}", [detail] if detail else [])
     if outcome.child_pid is None:
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: the child never reported its pid",
             ["Without the child's real pid there is nothing to poll."],
         )
@@ -800,17 +857,15 @@ def decide(
         detail = f"child exit code {outcome.child_returncode}"
         if outcome.timed_out:
             detail = "child never reached READY before the overall deadline"
-        return Decision(2, "CANNOT OBSERVE: the child failed before READY", [detail])
+        return indeterminate("CANNOT OBSERVE: the child failed before READY", [detail])
     if outcome.successful_polls == 0:
         kinds = {k.value for k, _ in outcome.failed_polls}
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: no OS query ever succeeded",
             sorted(kinds) or ["no polls were attempted"],
         )
     if not outcome.canary_seen:
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: the observer-health canary was never seen",
             [
                 "The child held a loopback connection open, and Windows never "
@@ -820,8 +875,7 @@ def decide(
         )
     if outcome.failed_polls:
         kinds = sorted({k.name for k, _ in outcome.failed_polls})
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: at least one OS query failed, leaving an unwatched interval",
             [
                 f"{len(outcome.failed_polls)} of "
@@ -832,8 +886,7 @@ def decide(
             ],
         )
     if outcome.timed_out:
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: the overall deadline expired before observation finished",
             [
                 "The pid, READY, and the canary may all look healthy, but the run "
@@ -843,8 +896,7 @@ def decide(
         )
 
     if not dns_complete:
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: destinations could not be classified within the deadline",
             [
                 dns_reason or "DNS inference did not finish.",
@@ -862,8 +914,7 @@ def decide(
         # Deliberately says nothing about DNS or external connections: this
         # branch is reached even when the probe observed nothing at all, and
         # borrowing DNS wording here would describe a run that did not happen.
-        return Decision(
-            2,
+        return indeterminate(
             "CANNOT OBSERVE: the command deadline expired before classification",
             [
                 "The probe and any naming step finished, but the shared budget "
@@ -876,21 +927,17 @@ def decide(
 
     # ---- 2. Classify what was observed. Names here are DNS *inference*.
     allowed_pairs = {(e["hostname"], e["port"]) for e in allowed}
-    external: list[dict[str, Any]] = []
+    external = observed
     undeclared: list[dict[str, Any]] = []
     seen_pairs: set[tuple[str, int]] = set()
-    for conn in sorted(outcome.external, key=lambda c: (c.remote_address, c.remote_port)):
-        candidate = names.get(conn.remote_address)
-        record = {
-            "address": conn.remote_address,
-            "port": conn.remote_port,
-            "dns_candidate": candidate,
-        }
-        external.append(record)
-        if candidate is None or (candidate, conn.remote_port) not in allowed_pairs:
+    for record in external:
+        candidate = record["dns_candidate"]
+        if candidate is None or (candidate, record["port"]) not in allowed_pairs:
+            record["classification"] = CLASSIFICATION_UNDECLARED
             undeclared.append(record)
         else:
-            seen_pairs.add((candidate, conn.remote_port))
+            record["classification"] = CLASSIFICATION_DECLARED
+            seen_pairs.add((candidate, record["port"]))
 
     if undeclared:
         return Decision(
@@ -1023,10 +1070,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nexternal endpoints observed (fact: IP:port): {len(decision.external)}")
     for record in decision.external:
         name = record["dns_candidate"] or "(no DNS candidate)"
-        marker = "UNDECLARED" if record in decision.undeclared else "declared"
-        print(f"  [{marker:^10}] {record['address']}:{record['port']}  ~ {name}")
+        # Read the explicit classification. Deriving "declared" from absence
+        # from the undeclared list would print every unclassified endpoint on an
+        # exit-2 run as declared.
+        marker = {
+            CLASSIFICATION_DECLARED: "declared",
+            CLASSIFICATION_UNDECLARED: "UNDECLARED",
+            CLASSIFICATION_UNCLASSIFIED: "unclassified",
+        }[record["classification"]]
+        print(f"  [{marker:^12}] {record['address']}:{record['port']}  ~ {name}")
     if not decision.external:
         print("  (none)")
+    if any(
+        r["classification"] == CLASSIFICATION_UNCLASSIFIED for r in decision.external
+    ):
+        print(
+            "  UNCLASSIFIED means observed but not classified: the endpoint was really\n"
+            "  seen, and this run lost the standing to say whether it is declared. It\n"
+            "  is neither declared nor undeclared."
+        )
     if decision.external:
         print(
             "  '~ name' is DNS INFERENCE, not the hostname the child was observed to\n"
@@ -1072,7 +1134,13 @@ def main(argv: list[str] | None = None) -> int:
                     # Command-wide: the shared budget ran out before the verdict,
                     # whether or not the probe itself was cut short.
                     "command_deadline_expired": command_deadline_expired,
+                    "external_observed_count": len(decision.external),
+                    # Every observed endpoint, each with an explicit
+                    # "classification" of declared / undeclared / unclassified.
+                    # Unclassified means observed but not classified.
                     "external": decision.external,
+                    # Only endpoints genuinely classified as undeclared; empty
+                    # on an indeterminate run.
                     "undeclared": decision.undeclared,
                     "missing_expected": decision.missing_expected,
                     "name_attribution": "dns-inference-only; not observed SNI",

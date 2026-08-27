@@ -215,7 +215,7 @@ discovered later.
 | Service SID | `SERVICE_SID_TYPE_RESTRICTED`, `NT SERVICE\FaceAuthVerifier` | Nameable in ACLs and in the pipe SDDL; adds the write-restricted SID to the token (E4). |
 | Start type | Manual, triggered / demand start | No reason to run when nobody is signing in. |
 | Desktop interaction | None. Never `SERVICE_INTERACTIVE_PROCESS`. | Session 0 isolation. |
-| Network | None. Deny all outbound. | Verification is entirely local; the KDC/CRL traffic belongs to LSA, not to this service. |
+| Network | None. Deny all outbound. | Verification is entirely local; the KDC/CRL traffic belongs to LSA, not to this service. **Unchanged, and now a hard gate:** the current Phase 1 dependency set cannot satisfy this - MediaPipe uploads telemetry to `play.googleapis.com` with no supported opt-out. See `docs/PRIVACY_NETWORK_AUDIT.md`, ADR-0005, and criterion **B17**. |
 | Privileges | `SeChangeNotifyPrivilege` only, unless a specific need is demonstrated and documented. All others removed via a required-privileges list. | Least privilege. |
 | Filesystem | Read: model files, template store. Write: its own state/log directory only. | Enforced by ACL, not convention. |
 | Recovery | No automatic restart loop that could mask a failure; failures surface as an immediate DENY to the client (R6). | Fail closed and fail visibly. |

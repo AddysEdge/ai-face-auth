@@ -54,7 +54,8 @@ If `native/` changed:
 # (paste results)
 ```
 
-- [ ] All 137 pre-existing Python tests still pass
+- [ ] All pre-existing Python tests still pass (no count is hard-coded here on
+      purpose - it goes stale; paste the run above)
 - [ ] Any tests I added pass
 - [ ] Ruff passes
 - [ ] mypy passes
@@ -106,7 +107,7 @@ these links will be closed.
 
 - [ ] Owner's recorded product-scope decision accepting the AD-domain-only
       scope (B7): <!-- link -->
-- [ ] Evidence for **every Part B entry criterion, including B4a and B16**, in
+- [ ] Evidence for **every Part B entry criterion, including B4a, B16, and B17**, in
       `docs/PHASE2_ACCEPTANCE_CRITERIA.md` (the list is not a contiguous
       range): <!-- link -->
 - [ ] Disposable-VM snapshot/rollback policy (**B5**) and rehearsed recovery
@@ -118,6 +119,10 @@ these links will be closed.
 - [ ] If in-flight cancellation is in scope: cancellable/bounded backend and an
       interruptible service design, under a new protocol version (**B16**):
       <!-- link -->
+- [ ] Verification path makes **no outbound network connections** (**B17**):
+      ADR-0005 accepted with Option A or B implemented, and
+      `scripts/check_network_activity.py` showing zero external endpoints with
+      an empty `scripts/network_allowlist.json`: <!-- link -->
 - [ ] This PR does **not** also relax the `repo-hygiene` CI guard. Relaxing it
       is a separate, standalone Phase 3-enablement PR.
 

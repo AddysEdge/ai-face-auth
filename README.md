@@ -3,8 +3,12 @@
 [![CI](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml)
 
-A local, offline, webcam-based face-authentication **demo/research
-prototype**. It is a longer-term exploration into whether a legitimate,
+A local, webcam-based face-authentication **demo/research prototype**. All
+face detection, embedding, and matching run locally on CPU; no image, frame,
+template, or embedding ever leaves the machine. It is **not** network-silent:
+the bundled MediaPipe binary uploads usage telemetry to `play.googleapis.com`,
+which upstream provides no supported way to disable - see
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). It is a longer-term exploration into whether a legitimate,
 Microsoft-supported Windows Credential Provider could one day offer face
 authentication as an alternative sign-in method. **It does not touch Windows
 sign-in in any way, and after the Phase 2 review it is clear that for a local
@@ -14,9 +18,9 @@ Windows account it never can - see below.**
 
 | | |
 |---|---|
-| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 137 tests. |
+| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 234 tests. |
 | **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
-| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, and B15 are the most architecture-critical, but they are not the whole gate. |
+| **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, B15, and B17 are the most architecture-critical, but they are not the whole gate. |
 
 **No Credential Provider is registered. No Windows service is installed. No
 Windows password is handled anywhere in this repository.** Nothing here reads
@@ -55,11 +59,13 @@ the answer, not a stepping stone to one.
 
 **Every entry criterion in
 [`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md)
-Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, and **B16** - **and**
-the repository owner must record explicit written approval. The identifiers are
-not a contiguous range, so "B1-B15" would silently omit two of them.
+Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, **B16**, and
+**B17** - **and** the repository owner must record explicit written approval.
+The identifiers are not a contiguous range, so "B1-B15" would silently omit
+three of them. Refer to the gate as *"every Part B entry criterion, including
+B4a, B16, and B17"*.
 
-Three of those are the most architecture-critical, in the sense that failing any
+Four of those are the most architecture-critical, in the sense that failing any
 one of them would invalidate the design rather than merely delay it:
 
 - **B1** - whether a third-party Session 0 service can open a camera before
@@ -72,6 +78,13 @@ one of them would invalidate the design rather than merely delay it:
   the credential blob to the caller and does not validate it - so the claim was
   withdrawn and no replacement is proposed. Without one, enrollment cannot be
   authorized safely at all.
+- **B17** - the verification path must make no outbound network connections.
+  Phase 3 specifies the verifier service as having no network access at all,
+  and the current dependency set cannot meet that: MediaPipe uploads telemetry
+  to `play.googleapis.com` with no supported opt-out. This is a design
+  conflict, not a documentation problem - see
+  [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) and
+  [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
 
 **The rest are not optional.** They include the AD + PKI lab (**B4**),
 verification against a Full Enforcement domain controller (**B4a**), the
@@ -93,9 +106,25 @@ compatibility rollback key has been unsupported since 9 September 2025.
 - Authenticates a user the same way: capture → detect → quality-gate →
   liveness challenge → embed → compare against the stored template →
   threshold decision → grant/deny.
-- Runs entirely offline, on CPU, using open, license-clean pretrained
-  models (see "Models" below). No cloud API, no API key, no network access
-  required at runtime.
+- Runs on CPU using open, license-clean pretrained models (see "Models"
+  below). No cloud API and no API key: **all biometric processing is local,
+  and no image, frame, template, or embedding is ever transmitted.**
+- Is **not** network-silent, and this is stated rather than glossed over. The
+  bundled MediaPipe binary opens a TLS connection to `play.googleapis.com` and
+  uploads usage telemetry (MediaPipe version, solution name, latency and
+  invocation counts) when a MediaPipe session is torn down. The extracted
+  MediaPipe telemetry extension schema has no field that could carry biometric
+  content, and Google states input data is never sent; the surrounding Clearcut
+  envelope was not decrypted, so it is not characterised here. It is documented
+  upstream behaviour with **no supported opt-out**.
+  Full investigation in [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md);
+  the open decision about what to do next is
+  [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
+  `python scripts/check_network_activity.py` re-checks this, and fails on any
+  destination it has not been told about. That checker reads **IP and port**;
+  the hostname it prints is DNS inference, not proof of the host contacted. The
+  independent evidence naming `play.googleapis.com` is the endpoint literal in
+  `libmediapipe.dll` plus the measured teardown correlation, both in the audit.
 - Rate-limits repeated failures with escalating cooldown, persisted to disk
   so it survives across separate CLI invocations, not just within one
   running process (see `docs/THREAT_MODEL.md` §12 for why this matters -
@@ -367,6 +396,8 @@ and folder structure.
 | [`docs/adr/0002-...`](docs/adr/0002-process-service-and-camera-boundaries.md) | Process/service topology, Session 0 camera blockers, why the preview was removed |
 | [`docs/adr/0003-...`](docs/adr/0003-ipc-security-protocol.md) | The versioned IPC protocol and its threat model |
 | [`docs/adr/0004-...`](docs/adr/0004-enrollment-provisioning-and-recovery.md) | Enrollment, provisioning, revocation, recovery, uninstall |
+| [`docs/adr/0005-...`](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) | MediaPipe telemetry vs. the offline claim - **open decision**, Phase 3 blocker B17 |
+| [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) | What leaves the machine, where it goes, and why "offline" was retracted |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented Phase 1 architecture |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 13 threats, mitigations, and residual risks |
 | [`docs/RESEARCH.md`](docs/RESEARCH.md) | Why every model and design choice was made |

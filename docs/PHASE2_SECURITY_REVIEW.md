@@ -29,10 +29,11 @@ repository.**
 > controller, an enterprise PKI, certificate enrolment, account mapping, and
 > reachable CRL/OCSP endpoints at sign-in time.
 >
-> Three hard blockers remain unproven and must be cleared before Phase 3 may
+> Four hard blockers remain unproven and must be cleared before Phase 3 may
 > begin: camera access in Session 0 pre-logon (B1), pre-logon latency and
-> reliability (B2), and a password-free way to authorize enrollment at all
-> (B15).
+> reliability (B2), a password-free way to authorize enrollment at all (B15),
+> and a verification path that makes no outbound network connections (B17,
+> added 2026-08-25 - see `docs/PRIVACY_NETWORK_AUDIT.md`).
 
 | Account type | Result |
 |---|---|
@@ -228,6 +229,13 @@ documented mechanism "to control access to the objects a service uses, instead
 of relying on the use of the LocalSystem account." Demand-start, no desktop
 interaction, no network access, `SeChangeNotifyPrivilege` only, write access
 limited to its own state directory. Full table in ADR-0002 section 5.3.
+
+**"No network access" is unchanged and unweakened - and it is now a blocker.**
+The Phase 1 dependency set cannot meet it today: the bundled MediaPipe binary
+uploads usage telemetry to `play.googleapis.com` with no supported opt-out
+(`docs/PRIVACY_NETWORK_AUDIT.md`). That conflict is tracked as Phase 3 entry
+criterion **B17** and decided in ADR-0005; it must be resolved by replacing or
+rebuilding the dependency, not by relaxing this requirement.
 
 ### 3.5 Making enrollment data available pre-logon, without weakening it
 
@@ -432,7 +440,11 @@ the relevant ADR.
 Phase 1 was not redesigned, weakened, or rewritten. Verified after this phase's
 changes:
 
-- Works fully offline; no network calls added.
+- No network calls were **added** by Phase 2, and no biometric data is
+  transmitted. The original wording here claimed Phase 1 "works fully
+  offline"; that was inaccurate and is retracted. The bundled MediaPipe
+  binary uploads usage telemetry to `play.googleapis.com` and always did.
+  See `docs/PRIVACY_NETWORK_AUDIT.md` and ADR-0005 (Phase 3 blocker B17).
 - Unexpected errors still fail closed.
 - Raw enrollment images still not retained by default.
 - Templates still protected locally by user-scope DPAPI.
@@ -461,11 +473,13 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 | **B15** | **Unresolved: no password-free, OS-mediated enrollment-authorization mechanism has been proven.** The previously claimed one does not qualify. Without it, pre-logon enrollment cannot be authorized safely and Phase 3 cannot proceed. | ADR-0004 5.1a |
 | **B4a** | Not yet done: strong certificate binding verified against a **Full Enforcement** domain controller, including observing a weak-mapped certificate fail with Event ID 39. | ADR-0001 E8 |
 | **B16** | Deferred by design: in-flight cancellation requires a genuinely bounded/cancellable backend and an asynchronous or otherwise interruptible service. Version 1 has neither. | ADR-0003 5.8/5.9 |
+| **B17** | **Unresolved: the verification path is not network-silent.** Section 3.4 specifies the verifier service with no network access, and the current dependency set cannot meet that - MediaPipe uploads usage telemetry to `play.googleapis.com` with no supported opt-out. A design conflict, not a documentation problem. | ADR-0005, `docs/PRIVACY_NETWORK_AUDIT.md` |
 
 **This table lists the architecture-critical blockers, not the whole gate.** The
 canonical list is `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B, and **every**
-criterion in it must pass - B1, B2, B3, B4, B4a, B5-B14, B15, and B16. The
-identifiers are not a contiguous range.
+criterion in it must pass - B1, B2, B3, B4, B4a, B5-B14, B15, B16, and B17.
+The identifiers are not a contiguous range, so "B1-B15" silently omits three of
+them.
 
 ### Accepted risks
 

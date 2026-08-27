@@ -40,8 +40,9 @@ exact, checkable conditions that must all be true before any Phase 3
 **Every criterion in this Part must be true. Any single failure blocks Phase 3.**
 
 The identifiers are **not a contiguous numeric range**: the list is B1, B2, B3,
-B4, **B4a**, B5-B14, B15, and **B16**. Writing "B1-B15" silently omits B4a and
-B16, so refer to it as *"every Part B entry criterion, including B4a and B16"*.
+B4, **B4a**, B5-B14, B15, **B16**, and **B17**. Writing "B1-B15" silently omits
+B4a, B16, and B17, so refer to it as *"every Part B entry criterion, including
+B4a, B16, and B17"*.
 Identifiers are stable - existing ones are never renumbered when a criterion is
 added.
 
@@ -86,6 +87,7 @@ added.
 | # | Criterion | How it is proved |
 |---|---|---|
 | **B16** | **The verification backend call is genuinely bounded and cancellable, and the service is asynchronous or otherwise interruptible.** Version 1 calls the backend synchronously: the post-verification deadline check refuses a late `Allow`, but nothing can bound or preempt the *call*, so a hung backend holds its worker thread and the concurrency gate until it returns (ADR-0003 sections 5.9 and 5.10). Phase 3 must fix the call, not just the decision. If in-flight cancellation is in scope it is introduced under a **new protocol version**; message type 3 stays reserved in v1 (ADR-0003 section 5.8). | A design document showing: (a) a hard upper bound on the backend call itself, including camera acquisition and inference; (b) cancellation points through the pipeline; (c) an event-loop or equivalent service that can read its transport while a verification runs; (d) a test proving a deliberately hung backend does not hold the worker or the gate past its bound. Plus a protocol version bump if a cancel message is added. |
+| **B17** | **The verification path makes no outbound network connections.** Phase 3 specifies the verifier service as having no network access at all (section 3.4 of `docs/PHASE2_SECURITY_REVIEW.md`, ADR-0002 section 5.3). The current dependency set cannot satisfy that: the bundled MediaPipe binary opens a TLS connection to `play.googleapis.com` and uploads usage telemetry on session teardown, upstream provides no supported way to disable it, and the behaviour is documented and intended (`docs/PRIVACY_NETWORK_AUDIT.md`). **This is a design conflict, not a documentation problem.** ADR-0005 must move from *Proposed* to *Accepted* with **Option A** (replace MediaPipe) or **Option B** (transparently build and verify MediaPipe without telemetry) selected **and implemented**. Those are the only two resolutions. The mandatory interim disclosure already applied in Phase 1 - retracting the false offline claims and documenting the actual behaviour - makes the documentation truthful, but it is not a resolution and does **not** clear this criterion. | `scripts/check_network_activity.py` run against the Phase 3 verification path, showing **zero** outbound connections, with `scripts/network_allowlist.json` empty. Plus ADR-0005 recorded as Accepted with the chosen option and its evidence. Neither a firewall rule, a hosts-file entry, nor any other per-machine block counts: the requirement is a property of the software, not of the machine it happens to run on. |
 
 ### Standing prohibitions that carry into Phase 3 unchanged
 

@@ -44,6 +44,16 @@ jobs:
       - name: Run pytest
         run: python -m pytest -q --junitxml=pytest-results.xml
 
+      # Python-level socket patching cannot see MediaPipe's connection: it is
+      # opened from native code and never enters CPython's socket module. This
+      # check asks Windows instead. Model weights are not committed, so in CI
+      # it exercises the import surface only - enough to catch a dependency
+      # that phones home on import, but NOT the session-teardown upload. The
+      # script says which mode it ran in rather than overstating the result.
+      # See docs/PRIVACY_NETWORK_AUDIT.md section 4.
+      - name: Check outbound network destinations against the allowlist
+        run: python scripts/check_network_activity.py
+
       - name: Run Ruff
         run: python -m ruff check --no-cache src tests scripts
 

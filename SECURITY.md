@@ -121,6 +121,51 @@ is a secret:
   `CredUIPromptForWindowsCredentials` could re-authenticate a user without
   exposing credential material; that claim was wrong and has been withdrawn.
 
+## What leaves this machine
+
+Stated plainly, because the project previously claimed it "runs entirely
+offline" and that was false.
+
+**No biometric data is transmitted, ever.** No image, video frame, face
+embedding, or enrolled template leaves the machine, in any phase. That
+commitment is absolute and appears in the never-do list below.
+
+**The process is nevertheless not network-silent.** The bundled MediaPipe
+binary opens a TLS connection to `play.googleapis.com` and uploads usage
+telemetry - MediaPipe version, platform, solution name, graph name, latency and
+invocation counts - when a MediaPipe session is torn down. This is documented,
+intended upstream behaviour with **no supported opt-out**; it is not something
+this project chose. It predates any dependency bump here and was simply not
+noticed.
+
+What the evidence covers, stated precisely: the **MediaPipe telemetry extension
+schema** was extracted from the shipped binary and contains no field that could
+carry biometric content. The broader assurance that input data is never sent is
+[Google's statement](https://github.com/google-ai-edge/mediapipe/issues/6291#issuecomment-4896121772), also in the [MediaPipe Terms of Service](https://developers.google.com/edge/mediapipe/legal/tos) - not something binary inspection can prove. The Clearcut envelope
+carrying the extension was **not** decrypted, so any identifiers it may add are
+uncharacterised, and nothing here establishes that the telemetry is anonymous.
+
+The full measurement - destination, trigger, the MediaPipe telemetry
+extension schema, retry
+behaviour, and the opt-out search - is in
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
+offline claims was mandatory and is already done; it is not a fix. The open
+decision - replace MediaPipe, or transparently build and verify it without
+telemetry - is
+[ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
+`python scripts/check_network_activity.py` reproduces the measurement, and CI
+fails if any destination outside
+[`scripts/network_allowlist.json`](scripts/network_allowlist.json) appears.
+
+**Please do report anything that does not match the audit.** The known,
+documented telemetry described above is not currently being treated as a
+compromise, so it does not need re-reporting on its own. But an unexpected
+payload, an identifier or destination the audit does not describe, any
+transmission of biometric data, or any behaviour inconsistent with
+`docs/PRIVACY_NETWORK_AUDIT.md` should be reported through the process at the
+top of this file. The envelope contents were never fully characterised, so
+evidence about them is genuinely useful rather than a duplicate.
+
 ## What this project will never do
 
 These are permanent commitments, not current limitations, and they hold in
@@ -140,7 +185,11 @@ every phase:
 - Never use undocumented NGC or Windows Hello internals.
 - Never report a successful Windows authentication on the basis of a face match
   alone.
-- Never send biometric data off the machine.
+- Never send biometric data off the machine. This is unconditional, and is
+  unaffected by the third-party telemetry described above - that telemetry
+  carries no biometric content, and no schema in it is capable of carrying any.
+- Never add an outbound network destination without investigating it and
+  recording it in `scripts/network_allowlist.json` with its justification.
 - Never weaken domain-controller certificate-binding enforcement (for example
   via `StrongCertificateBindingEnforcement`) to make a weak certificate mapping
   work.

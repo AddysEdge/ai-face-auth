@@ -398,6 +398,7 @@ and folder structure.
 | [`docs/adr/0004-...`](docs/adr/0004-enrollment-provisioning-and-recovery.md) | Enrollment, provisioning, revocation, recovery, uninstall |
 | [`docs/adr/0005-...`](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) | MediaPipe telemetry vs. the offline claim - **open decision**, Phase 3 blocker B17 |
 | [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) | What leaves the machine, where it goes, and why "offline" was retracted |
+| [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) | Phase 2.5: why the telemetry-free-build option was rejected, and what still blocks replacing MediaPipe |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented Phase 1 architecture |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 13 threats, mitigations, and residual risks |
 | [`docs/RESEARCH.md`](docs/RESEARCH.md) | Why every model and design choice was made |

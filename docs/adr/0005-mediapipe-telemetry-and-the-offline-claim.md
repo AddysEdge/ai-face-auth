@@ -1,8 +1,9 @@
 # ADR-0005: MediaPipe telemetry and the offline claim
 
-- **Status:** **Proposed - decision OPEN.** Nothing here is chosen yet. This ADR
-  exists to record the problem, the evidence, and the viable options, so the
-  choice is made deliberately rather than by default.
+- **Status:** **Proposed - decision OPEN.** Option B is now **rejected** and
+  Option A is **selected as the path** (Phase 2.5, section 11), but Option A is
+  **not implemented**, so B17 is not cleared and this ADR is not Accepted.
+- **Phase 2.5 findings:** [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
 - **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
 - **Phase:** Phase 1 correction, and a **Phase 3 entry gate**.
@@ -230,3 +231,57 @@ This joins the existing Part B entry criteria in
 | E7 | Behaviour is pre-existing, not introduced by any bump in this repository | Identical behaviour under `mediapipe==1.0.0` / `onnxruntime==1.28.0` and `1.0.1` / `1.29.0` |
 | E8 | Python socket interception cannot observe it | Zero Python-level `connect` attempts recorded in every run |
 | E9 | Clearcut envelope identifiers and contents were **not** determined | Out of scope: would require decrypting TLS, which would need a certificate to be installed |
+
+## 11. Phase 2.5 outcome (2026-08-27)
+
+Phase 2.5 evaluated both options against primary sources and direct
+measurement. Full record: [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
+
+**Option B is rejected**, on two findings that are independent of its cost:
+
+- The installed wheel is **mediapipe 1.0.1**, and upstream has **no `v1.0.1`
+  tag or release** - the latest is `v1.0.0`. There is no public source
+  corresponding to the artifact this project audited and ships.
+- `search/code?q=clearcut+repo:google-ai-edge/mediapipe` returns
+  **`total_count: 0`**. The telemetry is not in the public tree at all, which
+  confirms the wheels are built from internal sources.
+
+Together these mean a source build would not be *removing* telemetry from the
+audited binary; it would be producing a different binary from a different source
+with no way to establish equivalence. That fails the provenance and
+verifiability requirements outright, before the recurring Bazel-on-Windows cost
+is even considered.
+
+**Option A is selected as the path**, and most of its risk is now retired:
+
+- The three TFLite models (`face_detector`, `face_landmarks_detector`,
+  `face_blendshapes`) are already inside the SHA-pinned, Apache-2.0
+  `face_landmarker.task` bundle. No new model provenance or licence is needed.
+- `ai-edge-litert` 2.2.0 ships a `cp312-win_amd64` wheel whose 18 native
+  binaries contain **zero** `play.googleapis` / `clearcut` / `playlog` strings.
+- Given MediaPipe's own landmarks, the extracted blendshape model on LiteRT
+  reproduces MediaPipe's `eyeBlinkLeft` / `eyeBlinkRight` **to five decimal
+  places**.
+- The turn-ratio signal needs no new model at all: `FaceBox.landmarks` already
+  carries YuNet's five points.
+
+**Why B17 is still not cleared.** The detector-to-ROI stage must be replicated
+*exactly*, and a first-pass replication is not exact - landmark error of
+0.010-0.028 normalised, 5-13 px on a 480 px frame. That matters because
+blendshape output is ROI-sensitive: reframing the same synthetic face moves the
+blink score by 9-41 % relative, against a decision band (`low 0.20` to
+`high 0.40`) only 0.20 wide. The blink thresholds were calibrated on live human
+data against MediaPipe's exact scale, so an inexact replication silently
+invalidates them. The failure mode is not a crash - it is an anti-spoofing
+control that still returns plausible numbers while its decision boundary has
+moved.
+
+Finishing Option A needs either exact ROI replication verified across a broad
+synthetic-input sweep (preferred - it needs no biometric data and keeps the
+existing calibration), or re-calibration with `scripts/calibrate_liveness.py`,
+which requires the owner's camera and face and is the owner's decision.
+
+**Rollback.** Nothing runtime-facing changed in Phase 2.5, so there is nothing
+to roll back. If Option A is later implemented and regresses, reverting the
+liveness provider and restoring the `mediapipe` dependency returns the project
+to the documented interim state.

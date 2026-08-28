@@ -654,8 +654,12 @@ network-silent requires one of two options, and neither has been selected:
   reproducibility work, maintenance across upstream releases, and a recurring
   obligation to re-verify telemetry absence on every rebuild.
 
-Both can make the software network-silent; neither is disqualified in
-principle. The trade-off, and a recommendation that is deliberately not applied,
+**Updated by Phase 2.5 (2026-08-27):** Option B is now **rejected** - the
+installed wheel (1.0.1) has no corresponding public source tag, and the Clearcut
+code is absent from the public tree entirely, so a source build cannot be shown
+equivalent to the audited artifact. Option A is **selected as the path** but is
+not implemented, so B17 remains open. Full record:
+[`PHASE2_5_B17_RESEARCH.md`](PHASE2_5_B17_RESEARCH.md). The trade-off, and a recommendation that is deliberately not applied,
 are in [ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md),
 recorded as **Proposed / open** and tracked in
 [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6). Phase 3 cannot

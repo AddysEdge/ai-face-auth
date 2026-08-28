@@ -149,9 +149,12 @@ The full measurement - destination, trigger, the MediaPipe telemetry
 extension schema, retry
 behaviour, and the opt-out search - is in
 [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
-offline claims was mandatory and is already done; it is not a fix. The open
-decision - replace MediaPipe, or transparently build and verify it without
-telemetry - is
+offline claims was mandatory and is already done; it is not a fix. Phase 2.5
+rejected the telemetry-free-build option and selected replacing the MediaPipe
+runtime as the path, but that is not implemented yet, so the behaviour above is
+still current - see
+[`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md). The decision
+record is
 [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
 `python scripts/check_network_activity.py` reproduces the measurement, and CI
 fails if any destination outside

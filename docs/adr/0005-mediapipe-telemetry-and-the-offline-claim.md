@@ -1,8 +1,9 @@
 # ADR-0005: MediaPipe telemetry and the offline claim
 
-- **Status:** **Proposed - decision OPEN.** Option B is now **rejected** and
-  Option A is **selected as the path** (Phase 2.5, section 11), but Option A is
-  **not implemented**, so B17 is not cleared and this ADR is not Accepted.
+- **Status:** **Proposed - decision OPEN.** Phase 2.5 (section 11) found Option A,
+  built as an independent reimplementation, **contradicted by measurement**, and
+  leaves Option B **available but unverified** as the leading candidate. B17 is
+  not cleared and this ADR is not Accepted.
 - **Phase 2.5 findings:** [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
 - **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
@@ -234,54 +235,64 @@ This joins the existing Part B entry criteria in
 
 ## 11. Phase 2.5 outcome (2026-08-27)
 
-Phase 2.5 evaluated both options against primary sources and direct
-measurement. Full record: [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
+Full record: [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
+B17 is **not** cleared.
 
-**Option B is rejected**, on two findings that are independent of its cost:
+### Correction to an earlier revision
 
-- The installed wheel is **mediapipe 1.0.1**, and upstream has **no `v1.0.1`
-  tag or release** - the latest is `v1.0.0`. There is no public source
-  corresponding to the artifact this project audited and ships.
-- `search/code?q=clearcut+repo:google-ai-edge/mediapipe` returns
-  **`total_count: 0`**. The telemetry is not in the public tree at all, which
-  confirms the wheels are built from internal sources.
+An earlier revision of this section **rejected Option B**, on a requirement that
+appears nowhere in B17 or issue #6: equivalence to the telemetry-bearing 1.0.1
+wheel. That was wrong and is withdrawn. B17 asks for a pinned public-source
+build that is transparently project-built, reproducible, verified telemetry-free
+and verified to preserve liveness behaviour - **not** equivalence to 1.0.1. The
+missing `v1.0.1` tag shows only that the *current wheel* is untraceable to
+public source; zero `clearcut` hits in the public tree *supports* a
+telemetry-free source build rather than disqualifying one, and the upstream
+collaborator states in mediapipe#6291 that a source-built SDK excludes
+telemetry.
 
-Together these mean a source build would not be *removing* telemetry from the
-audited binary; it would be producing a different binary from a different source
-with no way to establish equivalence. That fails the provenance and
-verifiability requirements outright, before the recurring Bazel-on-Windows cost
-is even considered.
+Also withdrawn: the claim that YuNet's five points make the head-turn signal
+MediaPipe-free. That equivalence was never demonstrated. The 478-landmark
+turn-ratio calculation (indices 1, 33, 263) stands unchanged.
 
-**Option A is selected as the path**, and most of its risk is now retired:
+### Option A - contradicted by measurement, as built
 
-- The three TFLite models (`face_detector`, `face_landmarks_detector`,
-  `face_blendshapes`) are already inside the SHA-pinned, Apache-2.0
-  `face_landmarker.task` bundle. No new model provenance or licence is needed.
-- `ai-edge-litert` 2.2.0 ships a `cp312-win_amd64` wheel whose 18 native
-  binaries contain **zero** `play.googleapis` / `clearcut` / `playlog` strings.
-- Given MediaPipe's own landmarks, the extracted blendshape model on LiteRT
-  reproduces MediaPipe's `eyeBlinkLeft` / `eyeBlinkRight` **to five decimal
-  places**.
-- The turn-ratio signal needs no new model at all: `FaceBox.landmarks` already
-  carries YuNet's five points.
+The public pipeline was reimplemented from primary source at `v1.0.0`: SSD
+anchors, `WEIGHTED` NMS with score-weighted box/keypoint blending, the exact
+rotation formula `target - atan2(-(y1-y0), x1-x0)`, ROI scale 1.5, the 146-index
+blendshape subset and the 52 names. The blendshape stage is **bit-exact** -
+given MediaPipe's landmarks it reproduces `eyeBlinkLeft`/`eyeBlinkRight` to five
+decimals. `ai-edge-litert` 2.2.0 was scanned and is telemetry-free (0 hits
+across 18 binaries).
 
-**Why B17 is still not cleared.** The detector-to-ROI stage must be replicated
-*exactly*, and a first-pass replication is not exact - landmark error of
-0.010-0.028 normalised, 5-13 px on a 480 px frame. That matters because
-blendshape output is ROI-sensitive: reframing the same synthetic face moves the
-blink score by 9-41 % relative, against a decision band (`low 0.20` to
-`high 0.40`) only 0.20 wide. The blink thresholds were calibrated on live human
-data against MediaPipe's exact scale, so an inexact replication silently
-invalidates them. The failure mode is not a crash - it is an anti-spoofing
-control that still returns plausible numbers while its decision boundary has
-moved.
+It still fails on a hard requirement. Across an eyelid-openness sweep the blink
+score diverges by up to **0.10967** - **55 % of the 0.20-wide decision band**
+(`low 0.20` -> `high 0.40`). A blink reading 0.223 under MediaPipe reads 0.113
+under the replica: same event, opposite sides of the threshold.
 
-Finishing Option A needs either exact ROI replication verified across a broad
-synthetic-input sweep (preferred - it needs no biometric data and keeps the
-existing calibration), or re-calibration with `scripts/calibrate_liveness.py`,
-which requires the owner's camera and face and is the owner's decision.
+The residual was localised. Handing the replica **MediaPipe's own ROI** - so the
+detector and ROI stages are removed from the comparison - the error persists at
+**0.070**, with landmark error 0.012-0.022 normalised. So it is not the anchors,
+the NMS, the rotation, or the ROI expansion. The cause is the 256×256 crop:
+independent resampling does not produce bit-identical tensor input to
+`ImageToTensorCalculator`, and the landmark CNN amplifies sub-pixel differences
+into decision-relevant blendshape differences.
+
+### Option B - available, unverified, now the leading candidate
+
+Not attempted, and nothing measured here disqualifies it. `v1.0.0` is tagged and
+available. Remaining: build it for Windows / Python 3.12 from pinned source,
+identify the artifact as project-built, record provenance and hashes, verify
+telemetry absence on the built binary, verify liveness behaviour against the
+1.0.1 oracle already built, and run the FULL 20-process network-silence test
+with an empty allowlist.
+
+Option A stays reachable only if the crop resampling is made to match exactly -
+every other stage is built and verified. It must not be closed by tuning
+constants against the oracle, which would fit the test rather than the
+transform. Re-calibrating the blink thresholds to a divergent replica is not an
+option: it needs a live camera and a real person, and it would re-derive a
+security threshold to fit an implementation.
 
 **Rollback.** Nothing runtime-facing changed in Phase 2.5, so there is nothing
-to roll back. If Option A is later implemented and regresses, reverting the
-liveness provider and restoring the `mediapipe` dependency returns the project
-to the documented interim state.
+to roll back.

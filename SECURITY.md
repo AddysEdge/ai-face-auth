@@ -150,9 +150,9 @@ extension schema, retry
 behaviour, and the opt-out search - is in
 [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
 offline claims was mandatory and is already done; it is not a fix. Phase 2.5
-rejected the telemetry-free-build option and selected replacing the MediaPipe
-runtime as the path, but that is not implemented yet, so the behaviour above is
-still current - see
+measured a replacement runtime and found it diverges from MediaPipe where the
+liveness threshold operates, so nothing changed and the behaviour above is still
+current - see
 [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md). The decision
 record is
 [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).

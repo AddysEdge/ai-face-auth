@@ -150,8 +150,9 @@ extension schema, retry
 behaviour, and the opt-out search - is in
 [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
 offline claims was mandatory and is already done; it is not a fix. Phase 2.5
-measured a replacement runtime and found it diverges from MediaPipe where the
-liveness threshold operates, so nothing changed and the behaviour above is still
+measured a replacement runtime that reproduces MediaPipe's published pipeline
+closely enough to be viable, but it is not yet integrated and the
+network-silence observation has not been made, so the behaviour above is still
 current - see
 [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md). The decision
 record is

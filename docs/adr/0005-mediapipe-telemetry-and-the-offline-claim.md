@@ -1,9 +1,11 @@
 # ADR-0005: MediaPipe telemetry and the offline claim
 
-- **Status:** **Proposed - decision OPEN.** Phase 2.5 (section 11) found Option A,
-  built as an independent reimplementation, **contradicted by measurement**, and
-  leaves Option B **available but unverified** as the leading candidate. B17 is
-  not cleared and this ADR is not Accepted.
+- **Status:** **Proposed - decision OPEN.** Phase 2.5 (section 11) measured Option A,
+  built as an independent reimplementation, as **viable**: after correcting the
+  preprocessing path it agrees with the 1.0.1 oracle to 0.0136 on the blink score
+  and 0.0019 on landmarks across 45 cases. Option B remains **available and
+  unverified**. B17 is not cleared - integration and the network-silence
+  observation are still outstanding - and this ADR is not Accepted.
 - **Phase 2.5 findings:** [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
 - **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
@@ -255,30 +257,62 @@ Also withdrawn: the claim that YuNet's five points make the head-turn signal
 MediaPipe-free. That equivalence was never demonstrated. The 478-landmark
 turn-ratio calculation (indices 1, 33, 263) stands unchanged.
 
-### Option A - contradicted by measurement, as built
+### Option A - measured as viable, not yet integrated
 
 The public pipeline was reimplemented from primary source at `v1.0.0`: SSD
 anchors, `WEIGHTED` NMS with score-weighted box/keypoint blending, the exact
 rotation formula `target - atan2(-(y1-y0), x1-x0)`, ROI scale 1.5, the 146-index
-blendshape subset and the 52 names. The blendshape stage is **bit-exact** -
-given MediaPipe's landmarks it reproduces `eyeBlinkLeft`/`eyeBlinkRight` to five
-decimals. `ai-edge-litert` 2.2.0 was scanned and is telemetry-free (0 hits
-across 18 binaries).
+blendshape subset and the 52 names. `ai-edge-litert` 2.2.0 was scanned and shows
+no telemetry strings across 18 binaries - supporting evidence, not proof; only
+the OS-level runtime check can support a no-endpoints claim.
 
-It still fails on a hard requirement. Across an eyelid-openness sweep the blink
-score diverges by up to **0.10967** - **55 % of the 0.20-wide decision band**
-(`low 0.20` -> `high 0.40`). A blink reading 0.223 under MediaPipe reads 0.113
-under the replica: same event, opposite sides of the threshold.
+**A previous revision of this ADR concluded Option A was "contradicted by
+measurement". That conclusion is withdrawn.** It was drawn from a replica that
+did not implement MediaPipe's published CPU preprocessing path: it resampled
+with `warpAffine` and a zero border, where the published converter uses
+`cv::RotatedRect` -> `cv::boxPoints` -> `cv::getPerspectiveTransform` ->
+`cv::warpPerspective` with `INTER_LINEAR` and `BORDER_REPLICATE`, applying the
+value-range transform after resampling. A failing replica is evidence about
+that replica, not about the approach.
 
-The residual was localised. Handing the replica **MediaPipe's own ROI** - so the
-detector and ROI stages are removed from the comparison - the error persists at
-**0.070**, with landmark error 0.012-0.022 normalised. So it is not the anchors,
-the NMS, the rotation, or the ROI expansion. The cause is the 256×256 crop:
-independent resampling does not produce bit-identical tensor input to
-`ImageToTensorCalculator`, and the landmark CNN amplifies sub-pixel differences
-into decision-relevant blendshape differences.
+Two defects were then found and fixed:
 
-### Option B - available, unverified, now the leading candidate
+| Fix | Worst blink err | Worst landmark err | Worst blendshape err |
+|---|---|---|---|
+| as previously built (`warpAffine`, zero border) | 0.10967 | 0.02764 | - |
+| published CPU preprocessing path | 0.01363 | 0.00152 | 0.60527 |
+| + blendshape landmarks denormalized by image size | **0.01363** | **0.00192** | **0.02770** |
+
+The second defect was localised by noticing that blendshape error exploded only
+on non-square images while landmark error stayed below 0.0007;
+`face_blendshapes_graph.cc` feeds `IMAGE_SIZE` to `LandmarksToTensorCalculator`,
+which scales `X` by image width and `Y` by image height before the blendshape
+model.
+
+Across 45 deterministic synthetic cases the replica now agrees with the oracle
+to 0.0136 (blink), 0.0019 (landmarks), 0.0277 (blendshapes) and 0.0030
+(head-turn ratio, against a 0.045 threshold), with detection agreeing on all 45
+including both no-face cases. A 0.25 px ROI perturbation alone moves the blink
+score by 0.0164, so the residual sits at the pipeline's sub-pixel conditioning
+floor rather than being a further structural difference.
+
+Two earlier statements are also corrected: the blendshape stage was described as
+"bit-exact ... to five decimals", which is self-contradictory - what was
+measured is agreement to five decimal places, and bit identity is not claimed;
+and the residual was said to persist "with a known-correct ROI", but that ROI
+was MediaPipe's landmark-derived next-frame ROI, not the detector-produced ROI
+used for the inference being compared, and no ROI here was captured from the
+graph edge.
+
+**What this does not yet show.** The configured thresholds are
+`blink_score_high = 0.40` / `blink_score_low = 0.20`, and MediaPipe itself emits
+at most ~0.21 on procedurally drawn faces. Decision equivalence at the
+configured thresholds is therefore **not demonstrated**, and resolving it with a
+real face is excluded by the project's own constraint against capturing
+biometric data. Integration and the FULL 20-process network-silence observation
+are also outstanding. B17 stays open.
+
+### Option B - available and unverified
 
 Not attempted, and nothing measured here disqualifies it. `v1.0.0` is tagged and
 available. Remaining: build it for Windows / Python 3.12 from pinned source,
@@ -287,12 +321,10 @@ telemetry absence on the built binary, verify liveness behaviour against the
 1.0.1 oracle already built, and run the FULL 20-process network-silence test
 with an empty allowlist.
 
-Option A stays reachable only if the crop resampling is made to match exactly -
-every other stage is built and verified. It must not be closed by tuning
-constants against the oracle, which would fit the test rather than the
-transform. Re-calibrating the blink thresholds to a divergent replica is not an
-option: it needs a live camera and a real person, and it would re-derive a
-security threshold to fit an implementation.
+Neither option may be closed by tuning constants against the oracle, which would
+fit the test rather than the transform. Re-calibrating the blink thresholds to a
+divergent replica is not an option: it needs a live camera and a real person, and
+it would re-derive a security threshold to fit an implementation.
 
 **Rollback.** Nothing runtime-facing changed in Phase 2.5, so there is nothing
 to roll back.

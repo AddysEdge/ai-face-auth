@@ -26,6 +26,16 @@ data/
 *.template
 *.dpapi
 templates/
+# B18 participant data - session manifests, Stage 0 workspaces, and any analysis
+# output derived from them. The tooling in scripts/b18_stage0/ can produce these;
+# none of it may ever be committed (docs/B18_REAL_INPUT_VALIDATION_PLAN.md 11.3).
+# Only a verified aggregate, non-identifying report may be committed, and only
+# under owner decision D16 - so that is deliberately NOT excepted here.
+b18_data/
+b18_workspace/
+*.manifest.json
+S[0-9][0-9].json
+S[0-9][0-9][0-9].json
 enrollment/
 *.embedding
 *.npy

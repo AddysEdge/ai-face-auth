@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from scripts.b18_stage0 import schema
+from scripts.b18_stage0.decision import outcome_for
+
 SYNTHETIC_COMMIT = "0" * 40
 SYNTHETIC_MODEL_SHA = "1" * 64
 CAMERA_A = "SYNTHETIC-CAM-A (fictional)"
@@ -48,6 +51,9 @@ def _provenance(camera: str) -> dict[str, Any]:
         "camera_label": camera,
         "camera_resolution": "1280x720",
         "os_build": "SYNTHETIC-OS-BUILD",
+        "liveness_implementation": "litert_landmarker",
+        "schema_version": schema.SCHEMA_VERSION,
+        "tool_version": schema.TOOL_VERSION,
     }
 
 
@@ -92,30 +98,20 @@ def make_trial(
     if frames_with_face is None:
         frames_with_face = max(len(scores), frames_captured - 2)
 
-    if scores:
-        decision = max(scores) >= HIGH and min(scores) <= LOW
-        continuity = frames_with_face / frames_captured
-        override = (
-            decision
-            and frames_captured >= MIN_FRAMES_FOR_CONTINUITY
-            and continuity < MIN_CONTINUITY
-        )
-        passed = decision and not override
-        attempt_outcome = "accepted" if passed else "rejected"
-        outcome_reason = (
-            "blink_detected" if passed
-            else "face_detection_unstable" if override
-            else "no_transient_blink_detected"
-        )
-        max_score: float | None = max(scores)
-        min_score: float | None = min(scores)
-    else:
-        # No observations: the provider returns early and the attempt is
-        # rejected for exactly that reason. Nothing is invented to fill the gap.
-        attempt_outcome = "rejected"
-        outcome_reason = "no_face_observed_during_challenge"
-        max_score = None
-        min_score = None
+    # Derived through the one shared implementation, which delegates to the
+    # shipping decide_blink. A fixture built by a second copy of the rule could
+    # encode an outcome the real system would never produce, and the validator
+    # would then be checked against a fiction.
+    outcome = outcome_for(
+        list(scores), HIGH, LOW,
+        frames_captured=frames_captured,
+        frames_with_face=frames_with_face,
+        min_face_continuity=MIN_CONTINUITY,
+        min_frames_for_continuity_check=MIN_FRAMES_FOR_CONTINUITY,
+    )
+    attempt_outcome, outcome_reason = outcome.outcome, outcome.reason
+    max_score: float | None = max(scores) if scores else None
+    min_score: float | None = min(scores) if scores else None
 
     return {
         "trial_index": trial_index,
@@ -137,7 +133,10 @@ def make_trial(
         "outcome_reason": outcome_reason,
         "ground_truth": ground_truth,
         "self_report": self_report,
-        "label_source": "schedule+self_report",
+        "label_source": (
+            schema.SPOOF_LABEL_SOURCE if intended_type in schema.SPOOF_TYPES
+            else schema.GENUINE_LABEL_SOURCE
+        ),
         "valid": valid,
         "exclusion_reason": exclusion_reason,
         "retry_of_trial_index": retry_of_trial_index,

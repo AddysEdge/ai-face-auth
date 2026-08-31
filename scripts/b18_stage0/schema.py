@@ -28,6 +28,8 @@ import math
 import re
 from typing import Any
 
+from scripts.b18_stage0.decision import outcome_for
+
 # --------------------------------------------------------------- vocabularies
 
 GENUINE_BLINK_TYPES = ("G1", "G2", "G3")
@@ -46,6 +48,16 @@ ATTEMPT_OUTCOMES = ("accepted", "rejected")
 GROUND_TRUTHS = ("blink", "no_blink", "spoof")
 SELF_REPORTS = ("blinked", "did_not_blink", "unsure", "n/a")
 LABEL_SOURCES = ("schedule+self_report", "schedule_only")
+
+# A genuine trial's label rests on what the participant was asked to do *and*
+# what they reported doing; a spoof trial has no participant to self-report, so
+# its label rests on the schedule alone. Using "schedule+self_report" on a spoof
+# claims corroborating evidence that cannot exist.
+GENUINE_LABEL_SOURCE = "schedule+self_report"
+SPOOF_LABEL_SOURCE = "schedule_only"
+
+#: The liveness implementations whose scores this schema describes.
+LIVENESS_IMPLEMENTATIONS = ("litert_landmarker",)
 
 EXCLUSION_REASONS = (
     "no_face_detected",
@@ -85,7 +97,8 @@ SESSION_KEYS = frozenset({
 PROVENANCE_KEYS = frozenset({
     "faceauth_commit", "python_version", "pinned_dependencies",
     "face_landmarker_sha256", "liveness_config", "camera_label",
-    "camera_resolution", "os_build",
+    "camera_resolution", "os_build", "liveness_implementation",
+    "schema_version", "tool_version",
 })
 CONFIG_KEYS = frozenset({
     "blink_score_high", "blink_score_low", "enabled_challenges",
@@ -125,11 +138,22 @@ TIMEOUT_MIN_S, TIMEOUT_MAX_S = 0.1, 600.0
 TEXT_MAX_LEN = 200
 NOTES_MAX_LEN = 500
 
+# Derived fields (max/min/continuity) are restatements of the score series, so a
+# small mismatch there is a transcription question, not a decision. These
+# tolerances never touch the accept/reject rule - that is decision.outcome_for,
+# which is exact and delegates to the shipping function.
 DERIVED_TOLERANCE = 1e-6
 CONTINUITY_TOLERANCE = 1e-3
-# Boundary comparisons are done on values that survived a JSON round trip, so an
-# exact == would be brittle. This tolerance decides "reaches the threshold".
-BOUNDARY_TOLERANCE = 1e-9
+
+# The valid range for a recorded PRNG seed. Python's random.seed accepts any
+# int, but the protocol records a 32-bit unsigned value so a run is repeatable
+# from the manifest alone.
+SEED_MIN, SEED_MAX = 0, 2**32 - 1
+
+#: Schema and tool versions this validator understands. A corpus may not mix
+#: versions (see corpus.check_sessions).
+SCHEMA_VERSION = "1.0"
+TOOL_VERSION = "1.0"
 
 
 class ManifestError(Exception):
@@ -276,6 +300,23 @@ def _validate_provenance(provenance: Any, findings: list[str]) -> None:
                     f"{path}.pinned_dependencies[{name!r}]: {pinned!r} is not an exact pinned version"
                 )
 
+    implementation = provenance.get("liveness_implementation")
+    if implementation not in LIVENESS_IMPLEMENTATIONS:
+        findings.append(
+            f"{path}.liveness_implementation: {implementation!r} is not one of "
+            f"{list(LIVENESS_IMPLEMENTATIONS)}; scores from a different liveness "
+            f"implementation are not comparable with these"
+        )
+
+    for key, expected in (("schema_version", SCHEMA_VERSION), ("tool_version", TOOL_VERSION)):
+        stated = provenance.get(key)
+        if stated != expected:
+            findings.append(
+                f"{path}.{key}: this tool reads {expected!r}, got {stated!r}; a manifest "
+                f"written against a different {key} may mean different things by the "
+                f"same field names"
+            )
+
     _validate_liveness_config(provenance.get("liveness_config"), findings)
 
 
@@ -337,29 +378,25 @@ def _verify_outcome(trial: dict, config: dict, path: str, findings: list[str]) -
         return
 
     values = [float(s) for s in scores]
-    decision = (
-        max(values) >= float(high) - BOUNDARY_TOLERANCE
-        and min(values) <= float(low) + BOUNDARY_TOLERANCE
-    )
     continuity = with_face / captured
-    override = (
-        decision
-        and captured >= MIN_FRAMES_FOR_CONTINUITY_CHECK
-        and continuity < float(min_continuity)
+    # The shipping rule, via the shipping function. No tolerance, no local copy.
+    expected = outcome_for(
+        values, float(high), float(low),
+        frames_captured=captured,
+        frames_with_face=with_face,
+        min_face_continuity=float(min_continuity),
+        min_frames_for_continuity_check=MIN_FRAMES_FOR_CONTINUITY_CHECK,
     )
-    passed = decision and not override
-    expected_outcome = "accepted" if passed else "rejected"
-    expected_reason = (
-        "blink_detected" if passed
-        else "face_detection_unstable" if override
-        else "no_transient_blink_detected"
-    )
+    expected_outcome, expected_reason = expected.outcome, expected.reason
 
     if outcome != expected_outcome:
         findings.append(
-            f"{path}.attempt_outcome: recorded {outcome!r} but max={max(values):.6f}, "
-            f"min={min(values):.6f} against high={high}/low={low} with continuity "
-            f"{continuity:.4f} implies {expected_outcome!r}"
+            # repr, not a rounded format: a value like 0.3999999995 must not be
+            # printed as "0.400000" in the very message explaining that it does
+            # not reach 0.40.
+            f"{path}.attempt_outcome: recorded {outcome!r} but max={max(values)!r}, "
+            f"min={min(values)!r} against high={high!r}/low={low!r} with continuity "
+            f"{continuity!r} implies {expected_outcome!r}"
         )
     if reason != expected_reason:
         findings.append(
@@ -477,6 +514,14 @@ def _validate_trial(trial: Any, index: int, config: dict, findings: list[str]) -
                     f"{path}: exclusion_reason 'no_face_detected' but frames_with_face "
                     f"is {with_face}, not 0"
                 )
+            # The capture loop cannot exceed its own configured frame budget.
+            cap = config.get("max_frames_per_challenge") if isinstance(config, dict) else None
+            if _is_int(cap) and captured > cap:
+                findings.append(
+                    f"{path}.frames_captured: {captured} exceeds the configured "
+                    f"max_frames_per_challenge {cap}; the capture loop stops at the cap, "
+                    f"so this record could not have been produced by the shipping path"
+                )
 
     # --- enums and text -----------------------------------------------------
     if trial.get("attempt_outcome") not in ATTEMPT_OUTCOMES:
@@ -522,8 +567,37 @@ def _validate_trial(trial: Any, index: int, config: dict, findings: list[str]) -
                 f"not {reason!r}"
             )
 
-    # --- outcome verification (valid trials only) ---------------------------
-    if valid is True and isinstance(config, dict):
+        # --- label source: what the label actually rests on -----------------
+        label_source = trial.get("label_source")
+        if intended in SPOOF_TYPES:
+            if label_source != SPOOF_LABEL_SOURCE:
+                findings.append(
+                    f"{path}.label_source: a spoof trial has no participant to "
+                    f"self-report, so its label rests on the schedule alone; expected "
+                    f"{SPOOF_LABEL_SOURCE!r}, got {label_source!r}"
+                )
+        elif label_source != GENUINE_LABEL_SOURCE:
+            findings.append(
+                f"{path}.label_source: a genuine trial's label requires both the "
+                f"scheduled action and the participant's self-report; expected "
+                f"{GENUINE_LABEL_SOURCE!r}, got {label_source!r}"
+            )
+
+    # --- turn_ratios are only meaningful for a head-turn challenge ----------
+    if isinstance(config, dict):
+        enabled = config.get("enabled_challenges")
+        turn_ratios = trial.get("turn_ratios")
+        if isinstance(enabled, list) and enabled == ["BLINK"] and turn_ratios:
+            findings.append(
+                f"{path}.turn_ratios: {len(turn_ratios)} value(s) recorded, but "
+                f"enabled_challenges is {enabled} - no head-turn challenge was issued, "
+                f"so a turn-ratio series cannot have been observed for this trial"
+            )
+
+    # --- outcome verification -----------------------------------------------
+    # Every trial, not only the valid ones: an excluded trial's recorded outcome
+    # is just as derivable from its score series, and just as editable.
+    if isinstance(config, dict):
         _verify_outcome(trial, config, path, findings)
 
 
@@ -640,8 +714,14 @@ def validate_session(session: Any) -> list[str]:
 
     _check_text(session.get("operator_role"), "session.operator_role", findings)
 
-    if not _is_int(session.get("randomisation_seed")):
+    seed = session.get("randomisation_seed")
+    if not _is_int(seed):
         findings.append("session.randomisation_seed: must be an integer, recorded for repeatability")
+    elif not (SEED_MIN <= seed <= SEED_MAX):
+        findings.append(
+            f"session.randomisation_seed: {seed} is outside the documented range "
+            f"{SEED_MIN}..{SEED_MAX}; a seed outside it cannot be replayed as recorded"
+        )
 
     _validate_provenance(session.get("provenance"), findings)
 

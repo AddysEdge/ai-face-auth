@@ -47,15 +47,42 @@ photo of the enrolled user.
 about, and the result was mixed - reported honestly below rather than
 oversold.**
 
-**Blink challenge: holds up.** `decide_blink()` requires the blink
-blendshape score to both rise above a high threshold (0.40) and dip below a
-low threshold (0.15) within the window. Live-tested against a genuinely
-stationary (propped, not hand-held) spoof photo for 10 continuous seconds:
-the observed blink_score stayed strictly between 0.168 and 0.382 the entire
-time - nowhere near either threshold (`tests/test_liveness_calibration.py::
-test_blink_correctly_rejects_a_genuinely_stationary_spoof_photo` pins this
-real data). A static image's appearance genuinely does not change the way a
-real blink does.
+**Blink challenge: holds up, but on a narrower margin than this section
+once claimed.** `decide_blink()` requires the blink blendshape score, within
+the window, to reach **at or above** the high threshold **0.40**
+(`max(scores) >= high`) **and also** to reach **at or below** the low
+threshold **0.20** (`min(scores) <= low`). Both comparisons are inclusive.
+The authoritative values are `blink_score_high` and `blink_score_low` in
+`src/faceauth/config.py`.
+
+Live-tested against a genuinely stationary (propped, not hand-held) spoof
+photo for 10 continuous seconds: the observed blink_score stayed between
+0.168 and 0.382 the entire time
+(`tests/test_liveness_calibration.py::test_blink_correctly_rejects_a_genuinely_stationary_spoof_photo`
+pins this real data), and the attempt was correctly rejected. A static
+image's appearance genuinely does not change the way a real blink does.
+
+**How that rejection actually worked, stated precisely.** Against the
+*current* thresholds the photo's minimum of 0.168 is at or below 0.20, so
+it **satisfied the low condition**; the attempt was rejected solely because
+its maximum of 0.382 did not reach 0.40 - a margin of **0.018**. Rejection
+therefore rested on the high threshold alone.
+
+*Historical note:* when this trial was run, `blink_score_low` was 0.15, and
+against that value the photo failed both conditions - which is why an
+earlier revision of this section described the score as "nowhere near either
+threshold". That description is **no longer accurate** for the shipping
+configuration: `blink_score_low` was subsequently raised to 0.20 because a
+real open-eye baseline commonly sits 0.20-0.30 and only occasionally dipped
+near 0.15, making the original value an unreliable gate for legitimate users
+(`docs/ACCEPTANCE_AUDIT.md`, defect 4). The raise does not change any
+decision the high threshold already governs, but it does mean the measured
+spoof rejection now depends on one threshold rather than two.
+
+The size of that margin has been observed **once**, on one photo, in one
+setup. Characterising it across attacks and conditions is exactly what
+Phase 3 entry criterion **B18** exists to do
+(`docs/B18_REAL_INPUT_VALIDATION_PLAN.md`, section 3.1); it is **open**.
 
 **Head-turn challenge: does NOT reliably hold up, and was found broken by
 live testing, not assumed safe.** The same 10-second stationary-photo trial

@@ -10,7 +10,7 @@ dependencies = [
     "onnxruntime==1.29.0",
     "ai-edge-litert==2.2.0",
     "numpy==2.5.2",
-    "cryptography==50.0.0",
+    "cryptography==50.0.1",
     "pydantic==2.13.4",
     "pywin32==312; sys_platform == 'win32'",
 ]

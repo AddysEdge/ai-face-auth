@@ -283,16 +283,21 @@ reporting p50/p95, so future runtime or model swaps have a concrete before/after
 ## 18. Recommended Python libraries
 
 `opencv-contrib-python` (single OpenCV install — see note below), `onnxruntime`,
-`mediapipe`, `numpy`, `pywin32` (Windows-only, DPAPI), `cryptography` (dev-fallback
+`ai-edge-litert`, `numpy`, `pywin32` (Windows-only, DPAPI), `cryptography` (dev-fallback
 storage), `pydantic` (configuration validation), `pytest` (tests). All version-pinned in
 `pyproject.toml` against the actual resolved/installed versions in this environment.
 
-**Note on OpenCV packaging:** `mediapipe` transitively depends on
-`opencv-contrib-python`. Declaring `opencv-python` *and* `opencv-contrib-python` together
-causes both to install into the same `cv2` namespace, which is undefined/fragile
-behavior. This repo depends on `opencv-contrib-python` only (a superset of
-`opencv-python`) and lets `mediapipe` pull it transitively, avoiding the conflict
-entirely.
+**Note on OpenCV packaging:** declaring `opencv-python` *and* `opencv-contrib-python`
+together causes both to install into the same `cv2` namespace, which is
+undefined/fragile behavior. This repo depends on `opencv-contrib-python` only (a
+superset of `opencv-python`), avoiding the conflict entirely.
+
+Until Phase 2.5 that single install arrived *transitively*, because `mediapipe`
+depended on `opencv-contrib-python`. `ai-edge-litert` replaced `mediapipe` and requires
+no OpenCV (`backports.strenum`, `flatbuffers`, `ml_dtypes`, `numpy`, `protobuf`, `tqdm`,
+`typing-extensions`), so `opencv-contrib-python` is now a **direct** dependency that
+nothing else pulls in. The conflict it avoids is unchanged; only the reason it is
+declared explicitly has changed.
 
 ## 19. Recommended Windows/native technologies
 

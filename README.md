@@ -5,12 +5,18 @@
 
 A local, webcam-based face-authentication **demo/research prototype**. All
 face detection, embedding, and matching run locally on CPU; no image, frame,
-template, or embedding ever leaves the machine. It is **not** network-silent:
-the bundled MediaPipe binary uploads usage telemetry to `play.googleapis.com`,
-which upstream provides no supported way to disable - see
-[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). It is a longer-term exploration into whether a legitimate,
-Microsoft-supported Windows Credential Provider could one day offer face
-authentication as an alternative sign-in method. **It does not touch Windows
+template, or embedding ever leaves the machine, and it makes **no outbound
+network connections at all**. That was not always true: the bundled MediaPipe
+binary uploaded usage telemetry to `play.googleapis.com` with no supported
+opt-out, which Phase 2.5 resolved by replacing that runtime - see
+[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) for the
+original measurement and
+[`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) for the
+replacement and its evidence.
+
+It is a longer-term exploration into whether a legitimate, Microsoft-supported
+Windows Credential Provider could one day offer face authentication as an
+alternative sign-in method. **It does not touch Windows
 sign-in in any way, and after the Phase 2 review it is clear that for a local
 Windows account it never can - see below.**
 
@@ -328,11 +334,11 @@ resistance profile, most importantly against video replay (see
 
 ## Liveness limitations
 
-The default liveness check is active challenge-response via MediaPipe
-blendshapes/landmarks, **BLINK challenges only by default**. It does
-**not** defeat a video replay of the legitimate user performing the
-requested action (no defense exists against this in Phase 1 - see
-`docs/THREAT_MODEL.md` §4).
+The default liveness check is active challenge-response driven by the MediaPipe
+Face Landmarker's blendshapes and landmarks - computed on `ai-edge-litert`, not
+on the MediaPipe runtime - **BLINK challenges only by default**. It does **not**
+defeat a video replay of the legitimate user performing the requested action (no
+defense exists against this in Phase 1 - see `docs/THREAT_MODEL.md` §4).
 
 **This was live-tested against real spoof attempts with a real phone
 screen, and the results are reported honestly, including a real gap that

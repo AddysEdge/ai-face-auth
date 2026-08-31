@@ -1712,10 +1712,32 @@ def test_child_source_does_not_import_mediapipe() -> None:
 
 
 def test_child_source_uses_only_synthetic_input() -> None:
-    """No camera, no biometric data - enforced, not just intended."""
-    assert "numpy.zeros" in check._CHILD_SOURCE
+    """No camera, no biometric data - enforced, not just intended.
+
+    The frame is drawn with cv2 primitives from a flat numpy fill. Nothing is
+    read from a device or a file, so there is no path by which a real face
+    could reach this probe.
+    """
+    assert "numpy.full" in check._CHILD_SOURCE
+    assert "cv2.ellipse" in check._CHILD_SOURCE
     for forbidden in ("VideoCapture", "imread", "imshow"):
         assert forbidden not in check._CHILD_SOURCE
+
+
+def test_child_source_drives_a_detectable_face_not_a_blank_frame() -> None:
+    """All three models must actually run, not just load.
+
+    On a blank frame the detector finds nothing and the provider returns early,
+    so the landmark and blendshape models would be loaded but never inferred
+    against - and a runtime that only phones home once it has done real work
+    would go unobserved. The probe therefore draws a face the detector can
+    find, and reports the liveness reason so a regression to
+    "no_face_observed_during_challenge" is visible in the run output.
+    """
+    assert "LIVENESS_REASON" in check._CHILD_SOURCE
+    assert check._CHILD_SOURCE.index("cv2.ellipse") < check._CHILD_SOURCE.index(
+        "provider.observe"
+    )
 
 
 def test_child_source_does_not_claim_a_dwell_threshold() -> None:

@@ -258,7 +258,7 @@ print("CANARY_CONNECTED", flush=True)
 
 # Import surface: every runtime dependency this project loads.
 import numpy            # noqa: F401
-import cv2              # noqa: F401
+import cv2
 import onnxruntime      # noqa: F401
 import ai_edge_litert   # noqa: F401
 import faceauth         # noqa: F401
@@ -271,16 +271,33 @@ if stage == "full":
     # not a hand-rolled approximation of it. If this ever stops matching what
     # authentication actually calls, the check stops meaning anything.
     from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
-    from faceauth.pipeline_types import ChallengeKind, FaceBox, Frame
+    from faceauth.pipeline_types import FaceBox, Frame
 
     provider = MediaPipeChallengeResponseLiveness(model_asset_path=landmarker_path)
     provider.new_challenge()
-    # Synthetic frame only. No camera, no biometric data.
-    frame = numpy.zeros((240, 320, 3), dtype=numpy.uint8)
-    face = FaceBox(x=100.0, y=60.0, width=120.0, height=140.0, confidence=0.9,
-                   landmarks=((130, 100), (170, 100), (150, 130), (135, 160), (165, 160)))
+
+    # A procedurally drawn face, not a blank frame: on a blank frame the
+    # detector finds nothing and returns early, so the landmark and blendshape
+    # models would load but never actually run inference. All three have to run
+    # for this check to cover the runtime it is meant to cover.
+    # Synthetic drawing only - no camera, no real face, no biometric data.
+    frame = numpy.full((480, 480, 3), 220, dtype=numpy.uint8)
+    cv2.ellipse(frame, (240, 240), (110, 150), 0, 0, 360, (200, 175, 155), -1)
+    for eye_x in (200, 280):
+        cv2.ellipse(frame, (eye_x, 205), (16, 12), 0, 0, 360, (255, 255, 255), -1)
+        cv2.circle(frame, (eye_x, 205), 7, (60, 40, 30), -1)
+        cv2.ellipse(frame, (eye_x, 205), (16, 12), 0, 0, 360, (120, 95, 80), 1)
+    cv2.line(frame, (240, 220), (240, 275), (170, 140, 120), 3)
+    cv2.ellipse(frame, (240, 310), (40, 18), 0, 0, 180, (140, 90, 90), -1)
+
+    face = FaceBox(x=130.0, y=90.0, width=220.0, height=300.0, confidence=0.9,
+                   landmarks=((200, 205), (280, 205), (240, 250), (215, 300), (265, 300)))
     provider.observe(Frame(image=frame, timestamp=0.0), face)
-    provider.finalize()
+    # The verdict itself is irrelevant here - one frame can never satisfy a
+    # transient challenge. The reason is what matters: anything other than
+    # "no_face_observed_during_challenge" proves the frame reached the landmark
+    # and blendshape models rather than stopping at the detector.
+    print("LIVENESS_REASON %s" % provider.finalize().reason, flush=True)
     time.sleep(dwell)
     del provider        # teardown: where the MediaPipe runtime used to upload
     print("SESSION_DONE", flush=True)

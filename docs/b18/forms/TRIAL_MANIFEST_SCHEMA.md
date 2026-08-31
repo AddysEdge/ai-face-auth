@@ -24,7 +24,7 @@ Stage 2 manifests requires a separate, owner-authorized, reviewed change.
   "participant_id": "P01",           // pseudonym only; never a name
   "date": "YYYY-MM-DD",              // a real calendar date
   "operator_role": "repository owner",
-  "randomisation_seed": 123456,
+  "randomisation_seed": 123456,      // 0 .. 4294967295, so the run replays
   "data_classification": "synthetic_stage0",   // REQUIRED; Stage 0 accepts only this
 
   "provenance": {                    // plan §11.4 - safe to publish
@@ -42,7 +42,10 @@ Stage 2 manifests requires a separate, owner-authorized, reviewed change.
     },
     "camera_label": "<model / interface>",   // NOT a serial number
     "camera_resolution": "1280x720",
-    "os_build": "<...>"
+    "os_build": "<...>",
+    "liveness_implementation": "litert_landmarker",  // the runtime under test
+    "schema_version": "1.0",           // this document's version
+    "tool_version": "1.0"              // the Stage 0 tool that reads it
   },
 
   "trials": [ /* trial objects */ ]
@@ -63,7 +66,7 @@ Stage 2 manifests requires a separate, owner-authorized, reviewed change.
   },
 
   "blink_scores": [0.24, 0.21, 0.63], // full per-frame series - REQUIRED (plan §8, §10.2)
-  "turn_ratios": null,                // only when head-turn is under evaluation
+  "turn_ratios": null,                // MUST be null/absent when enabled_challenges is ["BLINK"]
 
   "max_blink_score": 0.63,            // derived; primary spoof outcome (plan §6.3)
   "min_blink_score": 0.21,
@@ -77,7 +80,7 @@ Stage 2 manifests requires a separate, owner-authorized, reviewed change.
 
   "ground_truth": "blink",            // blink|no_blink|spoof - assigned independently (§7.4)
   "self_report": "blinked",           // blinked|did_not_blink|unsure|n/a
-  "label_source": "schedule+self_report",
+  "label_source": "schedule+self_report",  // genuine trials; spoofs use "schedule_only"
 
   "valid": true,
   "exclusion_reason": null,           // no_face_detected|missed_prompt|operator_error|
@@ -118,6 +121,26 @@ Every other trial must carry its series.
 - A retry may reference only an **excluded** original, must repeat the same
   `intended_type` and the same `condition` cell, must occur after it, and there
   may be at most one. Chains, cycles and cross-cell retries are rejected.
+- The decision comparison is **exact**. No tolerance widens either threshold: a
+  peak of `0.3999999995` does not reach a `0.40` high threshold, because the
+  shipping code says it does not. Validation calls
+  `faceauth.liveness.challenge_response.decide_blink` itself, so the two cannot
+  diverge.
+- `frames_captured` may not exceed `max_frames_per_challenge`; the capture loop
+  stops at the cap, so a larger count could not have been produced.
+- `blink_scores` may be no longer than `frames_with_face` — at most one score
+  per frame in which a face was seen.
+- `turn_ratios` must be null or absent when `enabled_challenges` is `["BLINK"]`:
+  no head-turn challenge was issued, so no turn-ratio series can exist.
+- `label_source` is `"schedule+self_report"` for a genuine trial and
+  `"schedule_only"` for a spoof. A spoof has no participant to self-report, so
+  claiming corroborating self-report evidence on one is rejected.
+- `randomisation_seed` must lie in `0 .. 4294967295`, so the run replays from
+  the manifest alone.
+- `liveness_implementation`, `schema_version` and `tool_version` must match what
+  the reading tool expects; a corpus may not mix them (nor Python minor
+  versions), because the same field names may not mean the same thing across
+  them.
 - No field anywhere contains a name, contact detail, serial number, or image —
   enforced by the whitelist, not by a list of forbidden names.
 

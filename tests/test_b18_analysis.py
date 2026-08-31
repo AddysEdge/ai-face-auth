@@ -325,7 +325,7 @@ def test_results_are_split_by_camera(result):
     assert sum(e["valid_trials"] for e in result["per_camera"]) == result["counts"]["trials_valid"]
 
 
-# ------------------------------------------- boundaries with a tolerance
+# --------------------------------------- boundaries, compared exactly
 
 
 def test_both_inclusive_boundaries_are_reported_as_exercised(result):
@@ -334,7 +334,14 @@ def test_both_inclusive_boundaries_are_reported_as_exercised(result):
     assert crossing["trials_at_high_boundary"] == 1     # the [0.20, 0.40] trial
     assert crossing["trials_at_low_boundary"] == 2      # that trial and S02 #1
     assert "inclusive" in crossing["comparison"]
-    assert crossing["boundary_tolerance"] > 0
+    # This assertion was previously `boundary_tolerance > 0`. The tolerance it
+    # asserted was the defect: it made the analysis accept values the shipping
+    # code rejects. The report now states the opposite, and the near-boundary
+    # tolerance that remains is a label only.
+    assert crossing["decision_comparison"] == (
+        "exact; no tolerance is applied to any decision"
+    )
+    assert crossing["near_boundary_label_tolerance"] > 0
 
 
 def test_a_trial_just_inside_the_boundaries_does_not_count_as_reaching_them():

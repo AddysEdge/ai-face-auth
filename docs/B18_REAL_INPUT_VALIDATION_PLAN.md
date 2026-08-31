@@ -175,15 +175,16 @@ that a participant's time is not wasted on a broken harness.
 The validator and analyser exist in `scripts/b18_stage0/`:
 
 ```
-python -m scripts.b18_stage0.cli validate MANIFEST [MANIFEST ...]
-python -m scripts.b18_stage0.cli analyse  MANIFEST [MANIFEST ...] [--workspace DIR]
+python -m scripts.b18_stage0.cli validate         MANIFEST [MANIFEST ...]
+python -m scripts.b18_stage0.cli analyse          MANIFEST [MANIFEST ...]
+python -m scripts.b18_stage0.cli rehearse-cleanup
 ```
 
 | Exit | Meaning |
 |---|---|
 | 0 | every manifest valid; for `analyse`, the run was published |
 | 1 | the manifests were read but are not acceptable — schema findings, or a corpus that cannot legitimately be aggregated |
-| 2 | the command could not run: missing/unreadable file, invalid UTF-8, duplicate JSON keys, unparseable JSON, or a workspace that failed capability verification |
+| 2 | the command could not run: missing/unreadable file, invalid UTF-8, duplicate JSON keys, unparseable JSON, or an output workspace that could not be created or written |
 
 **Synthetic-only.** Every manifest must declare
 `"data_classification": "synthetic_stage0"`. Anything else is refused, so this
@@ -198,28 +199,74 @@ trial is silently dropped. It recomputes every derived quantity, including the
 attempt outcome and its reason, from the observation series and the shipping
 decision rule; a recorded outcome that contradicts the recomputation is rejected.
 
+**One decision implementation.** `scripts/b18_stage0/decision.py` calls
+`faceauth.liveness.challenge_response.decide_blink` — the shipping function
+itself — so validation, analysis, the report and the tests cannot diverge from
+the system being rehearsed. The comparison is **exact**:
+`max(scores) >= high and min(scores) <= low`, both inclusive, with no tolerance.
+An earlier revision compared against `high - 1e-9` and therefore accepted
+`max = 0.3999999995` against a `0.40` threshold — a value the shipping code
+rejects. A dry run whose validator is more permissive than the system it
+rehearses gives false confidence about exactly the boundary the criterion turns
+on. A tolerance now appears only as a *label* ("this sat on the boundary") and
+changes nothing.
+
+Cross-field invariants enforced: `frames_captured` within the configured
+`max_frames_per_challenge`; the observation series no longer than
+`frames_with_face`; `turn_ratios` absent when only BLINK is enabled; a genuine
+trial labelled from the schedule **and** the participant's self-report; a spoof
+trial labelled from the schedule alone, since there is no participant to
+self-report; `randomisation_seed` inside its documented 32-bit range; and every
+trial's outcome recomputed, excluded trials included.
+
 `analyse` additionally enforces **cross-session comparability** before computing
 anything: duplicate inputs or session IDs, conflicting thresholds or liveness
-configuration, and differing code commits, model digests or dependency sets all
-stop the analysis rather than producing a note beside a wrong aggregate.
+configuration, differing Python minor versions, liveness implementations, schema
+or tool versions, and differing code commits, model digests or dependency sets
+all stop the analysis rather than producing a note beside a wrong aggregate.
+Camera, participant, session, date, seed and the environmental conditions the
+protocol deliberately sweeps still vary freely.
+
+**Every rate describes its own scope.** Numerator, denominator, contributing
+participant count, exclusions *within that same scope*, a trial-level
+descriptive label and the clustering limitation travel with each rate. An
+earlier revision attached the corpus-wide participant count and the corpus-wide
+exclusion total to every rate, so an S2 FAR computed from zero S2 trials still
+claimed two participants and every unrelated exclusion. FAR remains separated by
+attack type and is never pooled.
 
 Its output is **deterministic** — identical input yields byte-identical JSON and
 Markdown, with no timestamp anywhere — so that a reproduction check (§13) is
 meaningful.
 
-**Output safety.** There is no arbitrary `--out`/`--report`. Results are
-published into a fresh `run-NNNN` directory inside a workspace the tool created
-beneath the system temporary directory, under fixed filenames, staged first and
-published by one atomic rename. A run therefore cannot overwrite a source file,
-a user file, or a previous run, and a failure cannot leave a half-written
-artefact that looks like a completed result.
+**Output safety.** No option names an output path — there is no `--out`,
+`--report` or `--workspace`. `analyse` creates its own workspace beneath the
+system temporary directory and publishes into a fresh `run-NNNN` inside it under
+fixed filenames, staged first and published by one atomic rename. Nothing is
+written until parsing, schema validation and corpus validation have all passed,
+so an invalid run leaves **no** directory behind: an empty workspace is
+indistinguishable from a run that produced nothing. Output is left in place for
+review. A run cannot overwrite a source file, a user file, or a previous run,
+and a failure cannot leave a half-written artefact that looks complete.
 
-`scripts/b18_stage0/cleanup.py` rehearses workspace deletion. Deletion is
-**capability-based**: the only removable thing is a directory this tool created,
-carrying the marker and token it wrote. A caller cannot declare an arbitrary
-directory a workspace, so home, `Documents`, `AppData`, the repository and
-everything outside a real workspace are refused. It makes no secure-erasure
-claim (§12.3).
+**Deletion takes no path.** `scripts/b18_stage0/cleanup.py` rehearses the
+deletion step by creating its own throwaway directory, deleting that, and
+reporting what it did. It accepts no argument, and no CLI flag names something
+to delete.
+
+Two earlier designs failed here and are worth recording. The first let a caller
+declare any directory a workspace, which made `Path.home()` a legal workspace
+root and `AppData` and `Documents` legal targets. The second required a marker
+file carrying a random token and called that a **capability** — it was not one.
+The marker lived inside the very directory being checked, so it was
+self-authenticating: a forged directory plus a copied marker verified exactly
+like a genuine one, which was demonstrated rather than argued. A token that
+travels with the thing it protects proves nothing about it, and the fix was not
+a better token but to stop accepting the question.
+
+Root, home, repository, redirected-known-folder, symlink/reparse-point and
+ancestry checks all remain as defence in depth, running against a directory the
+tool itself just created. It makes no secure-erasure claim (§12.3).
 
 **The tooling has been exercised only against invented manifests in
 `scripts/b18_stage0/synthetic.py`.** There is no real-input evidence, no

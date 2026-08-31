@@ -210,49 +210,10 @@ jobs:
       #
       # No exception is added for a future aggregate report: publishing one
       # requires owner decision D16, which is undecided.
-      - name: Reject tracked B18 participant data by content
-        shell: python
+      - name: Reject tracked B18 participant data, evidence, and artifacts
         run: |
-          import pathlib, subprocess, sys
-
-          ALLOWED = {
-              "docs/b18/forms/TRIAL_MANIFEST_SCHEMA.md",
-              ".github/workflows/ci.yml",
-          }
-          ALLOWED_PREFIXES = ("scripts/b18_stage0/", "tests/test_b18_")
-          MARKERS = ("participant_id", "session_id", "blink_scores")
-
-          tracked = subprocess.run(
-              ["git", "ls-files"], capture_output=True, text=True, check=True
-          ).stdout.split()
-
-          offenders = []
-          for name in tracked:
-              if name in ALLOWED or name.startswith(ALLOWED_PREFIXES):
-                  continue
-              path = pathlib.Path(name)
-              try:
-                  text = path.read_text(encoding="utf-8", errors="ignore")
-              except OSError:
-                  continue
-              if all(marker in text for marker in MARKERS):
-                  offenders.append(name)
-
-          if offenders:
-              print("::error::tracked file(s) look like B18 participant data:", offenders)
-              sys.exit(1)
-          print(f"No B18 participant data tracked ({len(tracked)} files scanned by content).")
-
-          # Paths that must never be tracked at all, whatever they contain.
-          forbidden = [
-              n for n in tracked
-              if n.startswith(("b18_data/", "b18_workspace/", "b18_stage0_"))
-              or n.endswith(".manifest.json")
-          ]
-          if forbidden:
-              print("::error::tracked B18 data/workspace path(s):", forbidden)
-              sys.exit(1)
-          print("No B18 data or workspace paths tracked.")
+          python scripts/check_b18_data_leak.py --self-test
+          python scripts/check_b18_data_leak.py
 
       - name: Reject Credential Provider registration or credential serialization in code
         shell: bash

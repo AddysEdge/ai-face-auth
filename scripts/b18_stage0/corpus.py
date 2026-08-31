@@ -81,6 +81,34 @@ def check_sessions(sessions: list[dict]) -> list[str]:
         values = {json.dumps(extract(s), sort_keys=True) for s in sessions}
         return sorted(values)
 
+    # --- version and implementation comparability --------------------------
+    # A rate pooled across runtimes is a rate about no particular runtime. Python
+    # minor versions change float formatting, dict/set iteration in places, and
+    # dependency wheels; the liveness implementation *is* the thing under test.
+    def _python_minor(session: dict) -> str:
+        version = str(session["provenance"].get("python_version", ""))
+        return ".".join(version.split(".")[:2])
+
+    pythons = sorted({_python_minor(s) for s in sessions})
+    if len(pythons) > 1:
+        findings.append(
+            f"sessions ran on {len(pythons)} different Python minor versions {pythons}; "
+            f"the interpreter and its wheels are part of the runtime under test, so "
+            f"results from different minor versions must not be pooled"
+        )
+
+    for field, label in (
+        ("liveness_implementation", "liveness implementations"),
+        ("schema_version", "manifest schema versions"),
+        ("tool_version", "Stage 0 tool versions"),
+    ):
+        values = sorted({str(s["provenance"].get(field)) for s in sessions})
+        if len(values) > 1:
+            findings.append(
+                f"sessions declare {len(values)} different {label} {values}; the same "
+                f"field names may not mean the same thing across them"
+            )
+
     commits = distinct(lambda s: s["provenance"]["faceauth_commit"])
     if len(commits) > 1:
         findings.append(

@@ -29,6 +29,7 @@ import statistics
 from typing import Any
 
 from scripts.b18_stage0.corpus import require_aggregatable, thresholds
+from scripts.b18_stage0.decision import near_boundary, reaches_high, reaches_low
 from scripts.b18_stage0.schema import (
     GENUINE_BLINK_TYPES,
     GENUINE_NON_BLINK_TYPES,
@@ -46,9 +47,9 @@ ALPHA = 0.05
 #: crossed the decision boundary, and is reported as such.
 NEAR_MISS_WINDOW = 0.05
 
-#: Boundary comparisons run on values that survived a JSON round trip, so an
-#: exact ``==`` would be brittle.
-BOUNDARY_TOLERANCE = 1e-9
+#: Never used in a decision. Retained only so the report can say a value sat on
+#: a boundary; see scripts/b18_stage0/decision.py.
+NEAR_BOUNDARY = 1e-9
 
 STAGE0_BANNER = (
     "SYNTHETIC STAGE 0 EVIDENCE ONLY - B18 REMAINS OPEN. "
@@ -94,9 +95,27 @@ def zero_event_upper_bound(trials: int, alpha: float = ALPHA) -> float | None:
     return 1.0 - alpha ** (1.0 / trials)
 
 
-def _rate(numerator: int, denominator: int, *, participants: int, excluded: int) -> dict[str, Any]:
-    """A rate never travels alone: counts, interval, scope and basis ride with it."""
+def _rate(
+    numerator: int,
+    denominator: int,
+    *,
+    participants: int,
+    excluded: int,
+    scope: str,
+    event: str,
+) -> dict[str, Any]:
+    """A rate never travels alone: counts, interval, scope and basis ride with it.
+
+    ``participants`` and ``excluded`` describe **this rate's own scope**, not the
+    corpus. An earlier revision attached the corpus-wide participant count and
+    the corpus-wide exclusion total to every rate, so an S2 FAR computed from
+    zero S2 trials still claimed two participants and every unrelated exclusion.
+    Callers must therefore derive both from the same filter that produced the
+    denominator - :func:`_rate_over` does exactly that.
+    """
     entry: dict[str, Any] = {
+        "scope": scope,
+        "event": event,
         "numerator": numerator,
         "denominator": denominator,
         "rate": None if denominator == 0 else round(numerator / denominator, 6),
@@ -106,6 +125,7 @@ def _rate(numerator: int, denominator: int, *, participants: int, excluded: int)
         "excluded_trials_in_scope": excluded,
         "basis": "descriptive, trial-level",
         "not_a_population_rate": True,
+        "limitation": CLUSTERING_WARNING,
     }
     interval = wilson_interval(numerator, denominator)
     if interval is not None:
@@ -128,8 +148,29 @@ def _distribution(values: list[float]) -> dict[str, Any]:
     }
 
 
+#: Keys added to a *copy* of each trial so a rate can attribute it without
+#: re-walking the session list. Never present in a manifest.
+_PARTICIPANT = "_participant_id"
+_CAMERA = "_camera_label"
+_SESSION = "_session_id"
+
+
+def _tag(session: dict, trial: dict) -> dict:
+    """A shallow copy carrying its session's identity. Input is never mutated."""
+    return {
+        **trial,
+        _PARTICIPANT: session["participant_id"],
+        _CAMERA: session["provenance"]["camera_label"],
+        _SESSION: session["session_id"],
+    }
+
+
 def _valid(session: dict) -> list[dict]:
-    return [t for t in session["trials"] if t.get("valid") is True]
+    return [_tag(session, t) for t in session["trials"] if t.get("valid") is True]
+
+
+def _dropped(session: dict) -> list[dict]:
+    return [_tag(session, t) for t in session["trials"] if t.get("valid") is not True]
 
 
 def _of_types(trials: list[dict], types: tuple[str, ...]) -> list[dict]:
@@ -138,6 +179,36 @@ def _of_types(trials: list[dict], types: tuple[str, ...]) -> list[dict]:
 
 def _maxima(trials: list[dict]) -> list[float]:
     return [float(t["max_blink_score"]) for t in trials if t.get("max_blink_score") is not None]
+
+
+def _rate_over(
+    valid_pool: list[dict],
+    excluded_pool: list[dict],
+    types: tuple[str, ...],
+    predicate: Any,
+    *,
+    scope: str,
+    event: str,
+) -> dict[str, Any]:
+    """Build a rate whose metadata is derived from its own denominator.
+
+    ``valid_pool`` and ``excluded_pool`` are already narrowed to the slice being
+    described (a participant, a camera, or the whole corpus); ``types`` narrows
+    further to the trial types the rate is about. Participants and exclusions
+    are then counted over *those* trials, so the metadata can never describe a
+    wider population than the numerator and denominator do.
+    """
+    in_scope = _of_types(valid_pool, types)
+    dropped_in_scope = _of_types(excluded_pool, types)
+    numerator = sum(1 for t in in_scope if predicate(t))
+    return _rate(
+        numerator,
+        len(in_scope),
+        participants=len({t[_PARTICIPANT] for t in in_scope}),
+        excluded=len(dropped_in_scope),
+        scope=scope,
+        event=event,
+    )
 
 
 def _margin_block(trials: list[dict], high: float, label: str, note: str) -> dict[str, Any]:
@@ -150,11 +221,10 @@ def _margin_block(trials: list[dict], high: float, label: str, note: str) -> dic
     observed = max(maxima) if maxima else None
     # Near miss: below the threshold, but within the window of it. A peak at or
     # above the threshold is a crossing, not a near miss.
-    near_miss = [
-        m for m in rejected_maxima
-        if 0.0 <= high - m <= NEAR_MISS_WINDOW + BOUNDARY_TOLERANCE
-    ]
-    crossings = [m for m in maxima if m >= high - BOUNDARY_TOLERANCE]
+    near_miss = [m for m in rejected_maxima if 0.0 <= high - m <= NEAR_MISS_WINDOW]
+    # Exactly the shipping comparison. No tolerance: a value that does not reach
+    # the threshold has not crossed it, however narrowly it missed.
+    crossings = [m for m in maxima if reaches_high(m, high)]
     return {
         "scope": label,
         "note": note,
@@ -186,7 +256,7 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
 
     attempted = sum(len(s["trials"]) for s in ordered)
     all_valid = [t for s in ordered for t in _valid(s)]
-    excluded = [t for s in ordered for t in s["trials"] if t.get("valid") is not True]
+    excluded = [t for s in ordered for t in _dropped(s)]
 
     exclusions: dict[str, int] = {}
     for trial in excluded:
@@ -196,40 +266,51 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
     n_participants = len(participants)
     n_excluded = len(excluded)
 
-    def frr(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
-        genuine = _of_types(trials, GENUINE_BLINK_TYPES)
-        rejected = sum(1 for t in genuine if t["attempt_outcome"] == "rejected")
-        return _rate(rejected, len(genuine), participants=people, excluded=drops)
+    def frr(valid_pool: list[dict], dropped_pool: list[dict], scope: str) -> dict[str, Any]:
+        return _rate_over(
+            valid_pool, dropped_pool, GENUINE_BLINK_TYPES,
+            lambda t: t["attempt_outcome"] == "rejected",
+            scope=f"{scope}, genuine blink (G1-G3)",
+            event="genuine blink trial rejected",
+        )
 
-    def correct_rejection(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
-        non_blink = _of_types(trials, GENUINE_NON_BLINK_TYPES)
-        rejected = sum(1 for t in non_blink if t["attempt_outcome"] == "rejected")
-        return _rate(rejected, len(non_blink), participants=people, excluded=drops)
+    def correct_rejection(
+        valid_pool: list[dict], dropped_pool: list[dict], scope: str
+    ) -> dict[str, Any]:
+        return _rate_over(
+            valid_pool, dropped_pool, GENUINE_NON_BLINK_TYPES,
+            lambda t: t["attempt_outcome"] == "rejected",
+            scope=f"{scope}, genuine non-blink (N1-N3)",
+            event="genuine non-blink trial correctly rejected",
+        )
 
-    def far_by_type(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for attack in SPOOF_TYPES:
-            typed = _of_types(trials, (attack,))
-            accepted = sum(1 for t in typed if t["attempt_outcome"] == "accepted")
-            out[attack] = _rate(accepted, len(typed), participants=people, excluded=drops)
-        return out
+    def far_by_type(
+        valid_pool: list[dict], dropped_pool: list[dict], scope: str
+    ) -> dict[str, Any]:
+        return {
+            attack: _rate_over(
+                valid_pool, dropped_pool, (attack,),
+                lambda t: t["attempt_outcome"] == "accepted",
+                scope=f"{scope}, {attack}",
+                event=f"{attack} spoof trial accepted",
+            )
+            for attack in SPOOF_TYPES
+        }
 
     # --- per-participant, before any aggregate ------------------------------
     per_participant = []
     for participant in participants:
-        trials = [t for s in ordered if s["participant_id"] == participant for t in _valid(s)]
-        drops = sum(
-            1 for s in ordered if s["participant_id"] == participant
-            for t in s["trials"] if t.get("valid") is not True
-        )
+        trials = [t for t in all_valid if t[_PARTICIPANT] == participant]
+        drops = [t for t in excluded if t[_PARTICIPANT] == participant]
+        scope = f"participant {participant}"
         per_participant.append({
             "participant_id": participant,
             "sessions": sorted(s["session_id"] for s in ordered if s["participant_id"] == participant),
             "valid_trials": len(trials),
-            "excluded_trials": drops,
-            "frr": frr(trials, people=1, drops=drops),
-            "correct_rejection_non_blink": correct_rejection(trials, people=1, drops=drops),
-            "far_by_attack_type": far_by_type(trials, people=1, drops=drops),
+            "excluded_trials": len(drops),
+            "frr": frr(trials, drops, scope),
+            "correct_rejection_non_blink": correct_rejection(trials, drops, scope),
+            "far_by_attack_type": far_by_type(trials, drops, scope),
             "still_image_margin": _margin_block(
                 _of_types(trials, STILL_SPOOF_TYPES), high, "S1-S3", POOLING_REFUSAL
             ),
@@ -237,21 +318,17 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
 
     per_camera = []
     for camera in cameras:
-        trials = [t for s in ordered if s["provenance"]["camera_label"] == camera for t in _valid(s)]
-        drops = sum(
-            1 for s in ordered if s["provenance"]["camera_label"] == camera
-            for t in s["trials"] if t.get("valid") is not True
-        )
-        people = len({
-            s["participant_id"] for s in ordered if s["provenance"]["camera_label"] == camera
-        })
+        trials = [t for t in all_valid if t[_CAMERA] == camera]
+        drops = [t for t in excluded if t[_CAMERA] == camera]
+        scope = f"camera {camera}"
         per_camera.append({
             "camera_label": camera,
             "valid_trials": len(trials),
-            "excluded_trials": drops,
-            "participants": people,
-            "frr": frr(trials, people=people, drops=drops),
-            "far_by_attack_type": far_by_type(trials, people=people, drops=drops),
+            "excluded_trials": len(drops),
+            "participants": len({t[_PARTICIPANT] for t in trials}),
+            "frr": frr(trials, drops, scope),
+            "correct_rejection_non_blink": correct_rejection(trials, drops, scope),
+            "far_by_attack_type": far_by_type(trials, drops, scope),
             "still_image_margin": _margin_block(
                 _of_types(trials, STILL_SPOOF_TYPES), high, "S1-S3", POOLING_REFUSAL
             ),
@@ -261,7 +338,6 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
     per_attack_type = []
     for attack in SPOOF_TYPES:
         typed = _of_types(all_valid, (attack,))
-        accepted = sum(1 for t in typed if t["attempt_outcome"] == "accepted")
         family = (
             "still_image" if attack in STILL_SPOOF_TYPES
             else "video_replay" if attack in REPLAY_SPOOF_TYPES
@@ -270,7 +346,11 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
         per_attack_type.append({
             "type": attack,
             "family": family,
-            "far": _rate(accepted, len(typed), participants=n_participants, excluded=n_excluded),
+            "far": _rate_over(
+                all_valid, excluded, (attack,),
+                lambda t: t["attempt_outcome"] == "accepted",
+                scope=f"corpus, {attack}", event=f"{attack} spoof trial accepted",
+            ),
             "margin": _margin_block(typed, high, attack, f"{attack} only"),
         })
 
@@ -280,20 +360,22 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
 
     # --- threshold-crossing evidence, both boundaries inclusive -------------
     scored = [t for t in all_valid if t.get("max_blink_score") is not None]
-    reached_high = [t for t in scored if float(t["max_blink_score"]) >= high - BOUNDARY_TOLERANCE]
-    reached_low = [t for t in scored if float(t["min_blink_score"]) <= low + BOUNDARY_TOLERANCE]
+    reached_high = [t for t in scored if reaches_high(float(t["max_blink_score"]), high)]
+    reached_low = [t for t in scored if reaches_low(float(t["min_blink_score"]), low)]
     crossing = {
         "high_threshold": high,
         "low_threshold": low,
         "comparison": "max(scores) >= high AND min(scores) <= low; both inclusive",
-        "boundary_tolerance": BOUNDARY_TOLERANCE,
+        "decision_comparison": "exact; no tolerance is applied to any decision",
+        "near_boundary_label_tolerance": NEAR_BOUNDARY,
         "trials_reaching_high": len(reached_high),
         "trials_reaching_low": len(reached_low),
+        # Descriptive only - "sat on the boundary". Changes no decision.
         "trials_at_high_boundary": sum(
-            1 for t in scored if abs(float(t["max_blink_score"]) - high) <= BOUNDARY_TOLERANCE
+            1 for t in scored if near_boundary(float(t["max_blink_score"]), high)
         ),
         "trials_at_low_boundary": sum(
-            1 for t in scored if abs(float(t["min_blink_score"]) - low) <= BOUNDARY_TOLERANCE
+            1 for t in scored if near_boundary(float(t["min_blink_score"]), low)
         ),
         "both_boundaries_exercised": bool(reached_high) and bool(reached_low),
     }
@@ -349,13 +431,11 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
         "per_participant": per_participant,
         "per_camera": per_camera,
         "aggregate": {
-            "frr_genuine_blink": frr(all_valid, people=n_participants, drops=n_excluded),
+            "frr_genuine_blink": frr(all_valid, excluded, "corpus"),
             "correct_rejection_genuine_non_blink": correct_rejection(
-                all_valid, people=n_participants, drops=n_excluded
+                all_valid, excluded, "corpus"
             ),
-            "far_by_attack_type": far_by_type(
-                all_valid, people=n_participants, drops=n_excluded
-            ),
+            "far_by_attack_type": far_by_type(all_valid, excluded, "corpus"),
             "far_pooled_across_attack_types": None,
             "why_no_pooled_far": POOLING_REFUSAL,
         },
@@ -369,9 +449,10 @@ def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
         "video_replay": {
             "scope": "S4",
             "trials": len(replay_trials),
-            "far": _rate(
-                sum(1 for t in replay_trials if t["attempt_outcome"] == "accepted"),
-                len(replay_trials), participants=n_participants, excluded=n_excluded,
+            "far": _rate_over(
+                all_valid, excluded, REPLAY_SPOOF_TYPES,
+                lambda t: t["attempt_outcome"] == "accepted",
+                scope="corpus, S4 video replay", event="S4 spoof trial accepted",
             ),
             "max_blink_distribution": _distribution(_maxima(replay_trials)),
             "note": (
@@ -415,6 +496,12 @@ def md_escape(value: Any) -> str:
     text = str(value)
     text = text.replace("\\", "\\\\").replace("|", "\\|")
     text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    # Angle brackets would let a value open an HTML tag or an autolink; square
+    # brackets with parentheses form a Markdown link; a backtick opens a code
+    # span that swallows the rest of the row.
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    for character in ("[", "]", "(", ")", "`"):
+        text = text.replace(character, "\\" + character)
     return "".join(ch if ch.isprintable() or ch == " " else " " for ch in text)
 
 
@@ -530,17 +617,43 @@ def render_markdown(result: dict[str, Any]) -> str:
         add(f"| {md_escape(entry['participant_id'])} | {cells} |")
     add("")
 
+    add("### Still-image margin, per participant")
+    add("")
+    for entry in result["per_participant"]:
+        add(f"**{md_escape(entry['participant_id'])}**")
+        add("")
+        for line in _fmt_margin(entry["still_image_margin"]):
+            add(line)
+        add("")
+
     add("## Per-camera results")
     add("")
-    add("| Camera | Participants | Valid | Excluded | FRR |")
-    add("|---|---|---|---|---|")
+    add("| Camera | Participants | Valid | Excluded | FRR | Correct rejection (N*) |")
+    add("|---|---|---|---|---|---|")
     for entry in result["per_camera"]:
         add(
             f"| {md_escape(entry['camera_label'])} | {entry['participants']} | "
             f"{entry['valid_trials']} | {entry['excluded_trials']} | "
-            f"{_fmt_rate(entry['frr'])} |"
+            f"{_fmt_rate(entry['frr'])} | "
+            f"{_fmt_rate(entry['correct_rejection_non_blink'])} |"
         )
     add("")
+    add("### FAR per attack type, per camera")
+    add("")
+    add("| Camera | " + " | ".join(SPOOF_TYPES) + " |")
+    add("|---" * (len(SPOOF_TYPES) + 1) + "|")
+    for entry in result["per_camera"]:
+        cells = " | ".join(_fmt_rate(entry["far_by_attack_type"][a]) for a in SPOOF_TYPES)
+        add(f"| {md_escape(entry['camera_label'])} | {cells} |")
+    add("")
+    add("### Still-image margin, per camera")
+    add("")
+    for entry in result["per_camera"]:
+        add(f"**{md_escape(entry['camera_label'])}**")
+        add("")
+        for line in _fmt_margin(entry["still_image_margin"]):
+            add(line)
+        add("")
 
     add("## Aggregate (secondary to the per-participant table)")
     add("")
@@ -586,7 +699,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     add("")
     crossing = result["threshold_crossing"]
     add(f"- Decision: `{crossing['comparison']}`")
-    add(f"- Comparison tolerance: {crossing['boundary_tolerance']}")
+    add(f"- Comparison: {crossing['decision_comparison']}")
     add(f"- Trials reaching high ({crossing['high_threshold']}): {crossing['trials_reaching_high']}")
     add(f"- Trials reaching low ({crossing['low_threshold']}): {crossing['trials_reaching_low']}")
     add(f"- Trials at the high boundary: {crossing['trials_at_high_boundary']}")

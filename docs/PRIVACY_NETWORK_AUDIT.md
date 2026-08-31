@@ -660,9 +660,11 @@ historical.** Option A was implemented. An earlier revision called it
 replica it rested on did not implement MediaPipe's published CPU preprocessing
 path. With that path implemented, and with the blendshape model's landmarks
 denormalized by image size as the published graph does, the replica agrees with
-the 1.0.1 oracle to 0.0136 on the blink score, 0.0019 on landmarks and 0.0030 on
-the head-turn ratio across 45 synthetic cases, with detection agreeing on all
-45. The `mediapipe` dependency is removed, the allowlist is empty, and 20
+the 1.0.1 oracle within every declared limit across 46 synthetic cases -
+landmark 0.92339 px against a 1.0 px limit, blink 0.01363 against 0.02,
+head-turn ratio 0.00298 against 0.0045, each of the 52 blendshapes 0.02779
+against 0.05 - with detection agreeing on all 46 and the face-presence gate
+agreeing on all 44 cases where the detector fired. The `mediapipe` dependency is removed, the allowlist is empty, and 20
 fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
 **zero** external endpoints, each with the observer canary proven and no failed
 OS query (`docs/b17/network_silence_20_runs.json`). **B17 is cleared.** Option B

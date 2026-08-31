@@ -3,9 +3,11 @@
 - **Status:** **Accepted - Option A implemented.** Phase 2.5 (section 11)
   reimplemented MediaPipe's published pipeline on `ai-edge-litert`, driving the
   same pinned `face_landmarker.task` weights, and removed the `mediapipe`
-  dependency. Measured against the 1.0.1 oracle across 45 synthetic cases: worst
-  blink error 0.0136, worst landmark error 0.0019, worst head-turn ratio error
-  0.0030, detection agreeing on all 45. The allowlist is now empty and 20
+  dependency. Measured against the 1.0.1 oracle across 46 synthetic cases, with
+  every metric enforced by the harness's exit status: landmark 0.92339 px
+  (limit 1.0 px), blink 0.01363 (0.02), head-turn ratio 0.00298 (0.0045), each
+  of the 52 blendshapes 0.02779 (0.05), detection agreement 46/46, and
+  face-presence-gate agreement 44/44. The allowlist is now empty and 20
   fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
   **zero** external endpoints, each with the observer canary proven and no failed
   OS query. **B17 is cleared** - see the scope note below. Option B was not
@@ -302,10 +304,13 @@ non-square images while landmark error stayed below 0.0007;
 which scales `X` by image width and `Y` by image height before the blendshape
 model.
 
-Across 45 deterministic synthetic cases the replica agrees with the oracle to
-0.0136 (blink), 0.0019 (landmarks), 0.0278 (blendshapes) and 0.0030 (head-turn
-ratio, against a 0.045 threshold), with detection agreeing on all 45 including
-both no-face cases. A 0.25 px ROI perturbation alone moves the blink score by
+Across 46 deterministic synthetic cases the replica agrees with the oracle
+within every declared limit - landmark 0.92339 px against 1.0 px, blink 0.01363
+against 0.02, head-turn ratio 0.00298 against 0.0045, and each of the 52
+blendshapes 0.02779 against 0.05 - with detection agreeing on all 46 (including
+both no-face cases) and the face-presence gate agreeing on all 44 cases where
+the detector fired. Those limits are enforced by the harness's exit status, not
+merely reported. A 0.25 px ROI perturbation alone moves the blink score by
 0.0164, so the residual sits at the pipeline's sub-pixel conditioning floor
 rather than being a further structural difference. The harness is in
 `scripts/b17_option_a/`; the preprocessing arithmetic is tested against an
@@ -323,7 +328,7 @@ graph edge.
 **Network silence, observed.** With `mediapipe` removed and the allowlist empty,
 20 fresh-process FULL-mode runs of `scripts/check_network_activity.py` - in a
 clean environment with `mediapipe` absent from site-packages entirely - each
-returned exit 0 with the loopback canary observed, 8-10 successful OS queries,
+returned exit 0 with the loopback canary observed, 5-6 successful OS queries,
 zero failed queries, no expired deadline, and **zero external endpoints**. Raw
 results: `docs/b17/network_silence_20_runs.json`. Earlier revisions treated the
 absence of telemetry strings in the LiteRT binaries as proof of no endpoints;

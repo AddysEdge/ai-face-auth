@@ -1,14 +1,14 @@
 [project]
 name = "faceauth"
 version = "0.1.0"
-description = "Local Windows face-authentication MVP - all biometric processing on-device (Phase 1 of a research prototype for a future Windows Credential Provider). Not network-silent: see docs/PRIVACY_NETWORK_AUDIT.md."
+description = "Local Windows face-authentication MVP - all biometric processing on-device, no outbound network connections (Phase 1 of a research prototype for a future Windows Credential Provider). See docs/PRIVACY_NETWORK_AUDIT.md."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 dependencies = [
     "opencv-contrib-python==5.0.0.93",
     "onnxruntime==1.29.0",
-    "mediapipe==1.0.1",
+    "ai-edge-litert==2.2.0",
     "numpy==2.5.2",
     "cryptography==50.0.0",
     "pydantic==2.13.4",

@@ -66,7 +66,8 @@ three of them. Refer to the gate as *"every Part B entry criterion, including
 B4a, B16, and B17"*.
 
 Four of those are the most architecture-critical, in the sense that failing any
-one of them would invalidate the design rather than merely delay it:
+one of them would invalidate the design rather than merely delay it. One of the
+four, B17, is now cleared:
 
 - **B1** - whether a third-party Session 0 service can open a camera before
   interactive logon. If this cannot be cleared using documented APIs, the
@@ -79,12 +80,13 @@ one of them would invalidate the design rather than merely delay it:
   withdrawn and no replacement is proposed. Without one, enrollment cannot be
   authorized safely at all.
 - **B17** - the verification path must make no outbound network connections.
-  Phase 3 specifies the verifier service as having no network access at all,
-  and the current dependency set cannot meet that: MediaPipe uploads telemetry
-  to `play.googleapis.com` with no supported opt-out. This is a design
-  conflict, not a documentation problem - see
-  [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) and
+  **Cleared in Phase 2.5.** It was the one design conflict in the gate: the
+  dependency set could not meet it while MediaPipe uploaded telemetry to
+  `play.googleapis.com` with no supported opt-out. That dependency is gone and
+  the observed result is zero external endpoints over 20 runs - see
+  [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) and
   [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
+  The remaining three below are still open.
 
 **The rest are not optional.** They include the AD + PKI lab (**B4**),
 verification against a Full Enforcement domain controller (**B4a**), the
@@ -109,22 +111,22 @@ compatibility rollback key has been unsupported since 9 September 2025.
 - Runs on CPU using open, license-clean pretrained models (see "Models"
   below). No cloud API and no API key: **all biometric processing is local,
   and no image, frame, template, or embedding is ever transmitted.**
-- Is **not** network-silent, and this is stated rather than glossed over. The
-  bundled MediaPipe binary opens a TLS connection to `play.googleapis.com` and
-  uploads usage telemetry (MediaPipe version, solution name, latency and
-  invocation counts) when a MediaPipe session is torn down. The extracted
-  MediaPipe telemetry extension schema has no field that could carry biometric
-  content, and Google states input data is never sent; the surrounding Clearcut
-  envelope was not decrypted, so it is not characterised here. It is documented
-  upstream behaviour with **no supported opt-out**.
-  Full investigation in [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md);
-  the open decision about what to do next is
-  [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
-  `python scripts/check_network_activity.py` re-checks this, and fails on any
-  destination it has not been told about. That checker reads **IP and port**;
-  the hostname it prints is DNS inference, not proof of the host contacted. The
-  independent evidence naming `play.googleapis.com` is the endpoint literal in
-  `libmediapipe.dll` plus the measured teardown correlation, both in the audit.
+- Makes **no outbound network connections**, and this is measured rather than
+  asserted. It did not always: the bundled MediaPipe binary opened a TLS
+  connection to `play.googleapis.com` and uploaded usage telemetry on session
+  teardown, documented upstream behaviour with **no supported opt-out**. Phase
+  2.5 removed that dependency - the liveness path now runs the same pinned
+  `face_landmarker.task` weights on `ai-edge-litert` through a reimplementation
+  of MediaPipe's published pipeline. `scripts/network_allowlist.json` is empty
+  and 20 fresh-process OS-level checks observed zero external endpoints
+  ([`docs/b17/network_silence_20_runs.json`](docs/b17/network_silence_20_runs.json)).
+  The full history is kept in
+  [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) and
+  [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) rather
+  than erased. `python scripts/check_network_activity.py` re-checks this and
+  fails on **any** destination, since nothing is allowlisted. It is a detector,
+  not a proof of absence: it reads **IP and port**, never payload bytes, and a
+  connection shorter than its poll interval could be missed.
 - Rate-limits repeated failures with escalating cooldown, persisted to disk
   so it survives across separate CLI invocations, not just within one
   running process (see `docs/THREAT_MODEL.md` §12 for why this matters -
@@ -160,8 +162,8 @@ compatibility rollback key has been unsupported since 9 September 2025.
 ## Setup
 
 Requires Windows and Python 3.12 (pinned in `pyproject.toml` - the CV/ML
-dependency ecosystem here, especially `mediapipe`, is most reliably
-supported on 3.12 at the time this was built; see `docs/RESEARCH.md`).
+dependency ecosystem here is most reliably supported on 3.12 at the time this
+was built, and `ai-edge-litert` ships a `cp312` wheel; see `docs/RESEARCH.md`).
 
 ```powershell
 # From the repository root:
@@ -396,8 +398,9 @@ and folder structure.
 | [`docs/adr/0002-...`](docs/adr/0002-process-service-and-camera-boundaries.md) | Process/service topology, Session 0 camera blockers, why the preview was removed |
 | [`docs/adr/0003-...`](docs/adr/0003-ipc-security-protocol.md) | The versioned IPC protocol and its threat model |
 | [`docs/adr/0004-...`](docs/adr/0004-enrollment-provisioning-and-recovery.md) | Enrollment, provisioning, revocation, recovery, uninstall |
-| [`docs/adr/0005-...`](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) | MediaPipe telemetry vs. the offline claim - **open decision**, Phase 3 blocker B17 |
+| [`docs/adr/0005-...`](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md) | MediaPipe telemetry vs. the offline claim - **Accepted**, Option A implemented, B17 cleared |
 | [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) | What leaves the machine, where it goes, and why "offline" was retracted |
+| [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) | Phase 2.5: replacing the MediaPipe runtime - the published pipeline reimplemented, measured agreement, and the network-silence evidence that cleared B17 |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented Phase 1 architecture |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 13 threats, mitigations, and residual risks |
 | [`docs/RESEARCH.md`](docs/RESEARCH.md) | Why every model and design choice was made |

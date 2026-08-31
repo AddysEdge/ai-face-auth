@@ -112,12 +112,18 @@ def test_allowlist_is_valid_json_with_the_expected_shape() -> None:
             assert entry[field], f"{entry['hostname']} is missing {field}"
 
 
-def test_the_only_declared_destination_is_the_documented_mediapipe_endpoint() -> None:
-    """A canary, not a rule: adding a destination must be said out loud."""
+def test_the_allowlist_is_empty() -> None:
+    """A canary, not a rule: re-adding a destination must be said out loud.
+
+    This asserted ("play.googleapis.com", 443) while the mediapipe wheel was a
+    dependency. That dependency is gone, so the runtime is expected to contact
+    nothing and the list is empty - which is what blocker B17 requires. A
+    future entry here re-opens B17 and must arrive with the same investigation
+    the original had.
+    """
     data = json.loads(ALLOWLIST.read_text(encoding="utf-8"))
-    assert [(e["hostname"], e["port"]) for e in data["allowed"]] == [
-        ("play.googleapis.com", 443)
-    ]
+    assert data["allowed"] == []
+    assert data["allow_empty_for_phase3"] is True
 
 
 def test_loopback_is_never_allowlistable_as_an_external_destination() -> None:
@@ -1175,6 +1181,9 @@ def test_an_unexpired_deadline_preserves_full_mode_missing_expected(
     imports-only, where a missing declared endpoint is not a mismatch, and got
     exit 0.
     """
+    # The project's own allowlist is empty now, so there is nothing that could
+    # go missing; this exercises the logic with a synthetic declared endpoint.
+    monkeypatch.setattr(check, "load_allowlist", lambda: DECLARED)
     probe = _recording(_quick_probe)
     assert _run_main(monkeypatch, tmp_path, "full", probe, timeout="120") == 1
     assert probe.stages == ["full"], "this test must actually exercise FULL mode"
@@ -1255,7 +1264,12 @@ def test_reverse_dns_that_starts_in_budget_and_expires_during_it_is_exit_two(
     monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
 
     def slow_but_successful(addresses, timeout):
-        time.sleep(max(0.0, timeout))  # burn exactly the granted budget
+        # Burn the granted budget, plus a small margin so the deadline is
+        # unambiguously expired rather than landing exactly on the boundary.
+        # Without the margin this raced: an empty allowlist means no declared
+        # hostnames to forward-resolve, and the overhead that used to push the
+        # clock past zero is gone.
+        time.sleep(max(0.0, timeout) + 0.05)
         return {}, None  # succeeded, knew nothing
 
     monkeypatch.setattr(check, "_dns_cache_reverse", slow_but_successful)
@@ -1272,6 +1286,7 @@ def test_forward_resolution_hitting_its_bound_is_exit_two_not_exit_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An abandoned lookup leaves the address unnamed - that is not a verdict."""
+    monkeypatch.setattr(check, "load_allowlist", lambda: DECLARED)
     monkeypatch.setattr(check, "run_probe", _probe_with_one_external())
     monkeypatch.setattr(check, "_dns_cache_reverse", lambda _a, _t: ({}, None))
     monkeypatch.setattr(
@@ -1291,6 +1306,7 @@ def test_partial_dns_followed_by_deadline_expiry_is_exit_two(
     evidence. The named address would pass and the unnamed one would fail, and
     neither conclusion is supportable.
     """
+    monkeypatch.setattr(check, "load_allowlist", lambda: DECLARED)
     monkeypatch.setattr(
         check,
         "run_probe",
@@ -1357,7 +1373,8 @@ def test_completed_dns_matching_a_declared_destination_still_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """And so must exit 0, or the check would just be a very slow `exit 2`."""
-    declared = check.load_allowlist()[0]
+    declared = DECLARED[0]
+    monkeypatch.setattr(check, "load_allowlist", lambda: DECLARED)
     monkeypatch.setattr(check, "run_probe", _probe_with_one_external("172.217.113.4"))
     monkeypatch.setattr(
         check,
@@ -1561,7 +1578,8 @@ def test_a_run_with_no_external_endpoints_still_reports_zero_honestly(
 def test_a_completed_run_still_classifies_a_declared_destination(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    declared = check.load_allowlist()[0]
+    declared = DECLARED[0]
+    monkeypatch.setattr(check, "load_allowlist", lambda: DECLARED)
     probe = _observing_probe(("172.217.113.4", 443))
     monkeypatch.setattr(
         check,
@@ -1660,21 +1678,66 @@ def test_child_source_reports_its_own_pid_first() -> None:
 def test_child_source_opens_the_health_canary_before_importing_anything() -> None:
     """Observer health must be provable even if an import later hangs."""
     assert check._CHILD_SOURCE.index("create_connection") < check._CHILD_SOURCE.index(
-        "import mediapipe"
+        "import numpy"
     )
 
 
 def test_child_source_tears_the_session_down() -> None:
-    """close() is the trigger. A probe that skips it observes nothing."""
-    assert "lm.close()" in check._CHILD_SOURCE
-    assert check._CHILD_SOURCE.index("lm.detect") < check._CHILD_SOURCE.index("lm.close()")
+    """Teardown was the MediaPipe trigger; a probe that skips it observes nothing.
+
+    The replacement runtime is not known to upload on teardown, but the probe
+    must still perform one: "we no longer think anything happens there" is not
+    a reason to stop looking.
+    """
+    assert "del provider" in check._CHILD_SOURCE
+    assert check._CHILD_SOURCE.index("provider.observe") < check._CHILD_SOURCE.index(
+        "del provider"
+    )
+
+
+def test_child_source_exercises_the_real_liveness_provider() -> None:
+    """The probe must run the code path the product runs, not a stand-in.
+
+    If this drifts from what authentication actually calls, the check stops
+    being evidence about the product.
+    """
+    assert "MediaPipeChallengeResponseLiveness" in check._CHILD_SOURCE
+    assert "provider.finalize()" in check._CHILD_SOURCE
+
+
+def test_child_source_does_not_import_mediapipe() -> None:
+    """B17: the telemetry-bearing runtime must be gone, not merely unused."""
+    assert "mediapipe" not in check._CHILD_SOURCE
+    assert "ai_edge_litert" in check._CHILD_SOURCE
 
 
 def test_child_source_uses_only_synthetic_input() -> None:
-    """No camera, no biometric data - enforced, not just intended."""
-    assert "numpy.zeros" in check._CHILD_SOURCE
+    """No camera, no biometric data - enforced, not just intended.
+
+    The frame is drawn with cv2 primitives from a flat numpy fill. Nothing is
+    read from a device or a file, so there is no path by which a real face
+    could reach this probe.
+    """
+    assert "numpy.full" in check._CHILD_SOURCE
+    assert "cv2.ellipse" in check._CHILD_SOURCE
     for forbidden in ("VideoCapture", "imread", "imshow"):
         assert forbidden not in check._CHILD_SOURCE
+
+
+def test_child_source_drives_a_detectable_face_not_a_blank_frame() -> None:
+    """All three models must actually run, not just load.
+
+    On a blank frame the detector finds nothing and the provider returns early,
+    so the landmark and blendshape models would be loaded but never inferred
+    against - and a runtime that only phones home once it has done real work
+    would go unobserved. The probe therefore draws a face the detector can
+    find, and reports the liveness reason so a regression to
+    "no_face_observed_during_challenge" is visible in the run output.
+    """
+    assert "LIVENESS_REASON" in check._CHILD_SOURCE
+    assert check._CHILD_SOURCE.index("cv2.ellipse") < check._CHILD_SOURCE.index(
+        "provider.observe"
+    )
 
 
 def test_child_source_does_not_claim_a_dwell_threshold() -> None:
@@ -1691,12 +1754,15 @@ def test_child_source_does_not_claim_a_dwell_threshold() -> None:
     not LANDMARKER.exists(),
     reason="model files not downloaded; run scripts/fetch_models.py",
 )
-def test_check_runs_and_reports_only_declared_destinations() -> None:
+def test_check_runs_and_observes_no_external_destination() -> None:
     """Slow: runs the real probe against the real dependency stack.
 
-    Asserts the check passes, that it proved observer health, that it lost no
-    observation window, and that it actually saw the declared endpoint - so a
-    blind check cannot masquerade as a clean result.
+    Asserts the check passes, that it proved observer health, and that it lost
+    no observation window - so a blind check cannot masquerade as a clean
+    result. It used to also assert that the declared MediaPipe endpoint *was*
+    observed; with that dependency removed the assertion is inverted, and zero
+    external endpoints is the expected result. The canary and poll assertions
+    are what keep that zero from being vacuous.
     """
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--json"],
@@ -1721,9 +1787,9 @@ def test_check_runs_and_reports_only_declared_destinations() -> None:
     assert payload["dns_complete"] is True
     assert payload["undeclared"] == []
     assert payload["missing_expected"] == []
-    assert [(e["dns_candidate"], e["port"]) for e in payload["external"]] == [
-        ("play.googleapis.com", 443)
-    ]
-    # The output must not overstate what a name means.
+    assert payload["external"] == [], "the runtime must contact nothing at all"
+    assert payload["external_observed_count"] == 0
+    # The output must not overstate what a name means. The human-readable
+    # "DNS INFERENCE" banner is only printed when there are addresses to name,
+    # so with zero external endpoints the JSON field is what carries it.
     assert payload["name_attribution"] == "dns-inference-only; not observed SNI"
-    assert "DNS INFERENCE" in completed.stdout

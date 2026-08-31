@@ -37,22 +37,49 @@ jobs:
           python -m pip install -e ".[dev]"
 
       # Model weights are not committed (see .gitignore and
-      # src/faceauth/model_registry.py). The realmodel-marked tests skip
-      # themselves when those files are absent, and the DPAPI tests skip when
-      # pywin32 is unavailable. Neither is silently ignored - both report as
-      # skipped in the run summary.
+      # src/faceauth/model_registry.py), so they are fetched from their pinned,
+      # checksum-verified sources. This runs before pytest deliberately: the
+      # realmodel-marked tests - including the end-to-end network-silence check
+      # that blocker B17 turns on - skip themselves when the weights are
+      # absent, and a skipped test is not evidence. It is also the only reason
+      # this job touches the network; the check further down observes just the
+      # child process it spawns, so this download cannot pollute its result.
+      - name: Fetch the pinned model weights
+        run: python scripts/fetch_models.py
+
+      # The DPAPI tests still skip when pywin32 is unavailable. That is not
+      # silently ignored - it reports as skipped in the run summary.
       - name: Run pytest
         run: python -m pytest -q --junitxml=pytest-results.xml
 
-      # Python-level socket patching cannot see MediaPipe's connection: it is
-      # opened from native code and never enters CPython's socket module. This
-      # check asks Windows instead. Model weights are not committed, so in CI
-      # it exercises the import surface only - enough to catch a dependency
-      # that phones home on import, but NOT the session-teardown upload. The
-      # script says which mode it ran in rather than overstating the result.
-      # See docs/PRIVACY_NETWORK_AUDIT.md section 4.
+      # Python-level socket patching cannot see a connection opened from native
+      # code - it never enters CPython's socket module - so this asks Windows
+      # instead. With the weights present it runs FULL mode: imports plus a
+      # real liveness session including teardown, which is where the removed
+      # MediaPipe runtime used to upload. The allowlist is empty, so any
+      # external destination at all fails the build.
+      # See docs/PRIVACY_NETWORK_AUDIT.md section 4 and docs/adr/0005.
       - name: Check outbound network destinations against the allowlist
-        run: python scripts/check_network_activity.py
+        run: python scripts/check_network_activity.py --json
+
+      # A pass in the wrong mode is not the evidence B17 needs, so assert the
+      # mode explicitly rather than trusting the exit code alone.
+      - name: Assert the network check actually ran in FULL mode
+        shell: python
+        run: |
+          import json, subprocess, sys
+          out = subprocess.run(
+              [sys.executable, "scripts/check_network_activity.py", "--json"],
+              capture_output=True, text=True, timeout=500,
+          )
+          payload, _ = json.JSONDecoder().raw_decode(out.stdout[out.stdout.index("{"):])
+          assert out.returncode == 0, out.stdout + out.stderr
+          assert payload["mode"] == "full", f"ran in {payload['mode']} mode, not full"
+          assert payload["observer"]["canary_seen"] is True, "observer health not proven"
+          assert payload["observer"]["failed_polls"] == [], payload["observer"]
+          assert payload["command_deadline_expired"] is False
+          assert payload["external"] == [], payload["external"]
+          print("FULL mode, observer healthy, zero external endpoints.")
 
       - name: Run Ruff
         run: python -m ruff check --no-cache src tests scripts

@@ -25,15 +25,18 @@ updates:
       prefix: "deps"
       include: scope
     groups:
-      # A CV/ML version bump is rarely safe in isolation: opencv, mediapipe,
-      # numpy, and onnxruntime constrain each other, and mediapipe pulls
-      # opencv-contrib-python transitively (docs/RESEARCH.md section 18).
-      # Grouping them means one PR to evaluate rather than four that conflict.
+      # A CV/ML version bump is rarely safe in isolation: opencv,
+      # ai-edge-litert, numpy, and onnxruntime constrain each other
+      # (docs/RESEARCH.md section 18). Grouping them means one PR to evaluate
+      # rather than four that conflict. ai-edge-litert replaced mediapipe here:
+      # a bump to it changes the runtime the liveness path executes on, so its
+      # PR must re-run the B17 network check and the Option A comparison in
+      # scripts/b17_option_a/ rather than being taken on version number alone.
       cv-ml-stack:
         patterns:
           - "opencv-*"
           - "onnxruntime*"
-          - "mediapipe"
+          - "ai-edge-litert"
           - "numpy"
       dev-tooling:
         patterns:

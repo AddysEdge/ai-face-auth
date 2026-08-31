@@ -2,31 +2,26 @@
   "_comment": [
     "Declared outbound network destinations for the FaceAuth runtime.",
     "",
-    "Every entry here is a destination this project is KNOWN to contact and has",
-    "explicitly accepted for now. An entry is not an endorsement - it is a",
-    "record that the behaviour was investigated, written up, and consciously",
-    "tolerated. See docs/PRIVACY_NETWORK_AUDIT.md and ADR-0005.",
+    "This list is now EMPTY, which is the state blocker B17 requires: the",
+    "runtime is expected to contact nothing at all, and any observed external",
+    "destination is a failure rather than something to be declared.",
+    "",
+    "It previously held one entry, play.googleapis.com:443, reached from Google",
+    "Clearcut telemetry code inside the bundled mediapipe wheel's",
+    "libmediapipe.dll on task-session teardown, with no upstream opt-out",
+    "(google-ai-edge/mediapipe#6291, closed 2026-07-06). That entry is removed",
+    "because the dependency is removed: the liveness path now runs the same",
+    "pinned face_landmarker.task weights on ai-edge-litert, through the graph",
+    "reimplemented in faceauth.liveness.litert_landmarker. The full account of",
+    "the original behaviour is kept in docs/PRIVACY_NETWORK_AUDIT.md and",
+    "ADR-0005 - removing the entry does not erase the history.",
     "",
     "scripts/check_network_activity.py fails if the runtime contacts anything",
-    "NOT listed here. Adding an entry is a deliberate act that requires the same",
-    "investigation the existing entry got: destination, trigger, transmitted",
-    "data, and whether it can be turned off.",
-    "",
-    "The goal is for this list to become EMPTY. Phase 3 requires it (blocker",
-    "B17): the verifier service is specified with no network access at all.",
-    "'allow_empty_for_phase3' is the assertion that must eventually hold."
+    "NOT listed here. With an empty list that means: anything at all. Adding an",
+    "entry back is a deliberate act requiring the same investigation the",
+    "original got - destination, trigger, transmitted data, and whether it can",
+    "be turned off - and would re-open B17."
   ],
   "allow_empty_for_phase3": true,
-  "allowed": [
-    {
-      "hostname": "play.googleapis.com",
-      "port": 443,
-      "source": "mediapipe (bundled libmediapipe.dll, Google Clearcut telemetry client)",
-      "trigger": "MediaPipe task session teardown (close()); fires even with zero detect() calls",
-      "transmits": "per the extracted MediaPipe telemetry extension schema: platform, host environment, mediapipe version, app_id, solution name, graph name, init latency, invocation counts. That schema has no field for an image, frame, landmark, embedding, or template. The surrounding Clearcut envelope was not decrypted; see docs/PRIVACY_NETWORK_AUDIT.md section 1.3.",
-      "opt_out": "none - upstream explicitly declined to add one (google-ai-edge/mediapipe#6291, closed 2026-07-06)",
-      "documented_in": "docs/PRIVACY_NETWORK_AUDIT.md",
-      "blocks_phase_3": true
-    }
-  ]
+  "allowed": []
 }

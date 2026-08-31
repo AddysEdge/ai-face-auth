@@ -1,24 +1,24 @@
 {
- "generated": "2026-08-30T23:54:42+00:00",
+ "generated": "2026-08-31T00:32:22+00:00",
  "oracle": "mediapipe==1.0.1",
  "replica": "ai-edge-litert via faceauth.liveness.litert_landmarker",
  "cases": 45,
  "detection_agreement": 45,
  "worst": {
   "blink_error": {
-   "value": 0.013634,
+   "value": 0.013626,
    "case": "open0.25"
   },
   "landmark_error": {
-   "value": 0.001921,
+   "value": 0.001924,
    "case": "scale1.30"
   },
   "blendshape_error": {
-   "value": 0.027702,
+   "value": 0.027787,
    "case": "scale1.30"
   },
   "turn_ratio_error": {
-   "value": 0.002978,
+   "value": 0.002981,
    "case": "rot-12"
   }
  },
@@ -28,9 +28,9 @@
    "oracle_detected": true,
    "replica_detected": true,
    "blink_error": 7e-06,
-   "landmark_error": 0.000294,
-   "blendshape_error": 0.004536,
-   "turn_ratio_error": 0.000343
+   "landmark_error": 0.000295,
+   "blendshape_error": 0.004516,
+   "turn_ratio_error": 0.000347
   },
   {
    "case": "open0.70",
@@ -38,35 +38,35 @@
    "replica_detected": true,
    "blink_error": 1e-06,
    "landmark_error": 0.000364,
-   "blendshape_error": 0.007047,
-   "turn_ratio_error": 7.7e-05
+   "blendshape_error": 0.007026,
+   "turn_ratio_error": 6.6e-05
   },
   {
    "case": "open0.45",
    "oracle_detected": true,
    "replica_detected": true,
    "blink_error": 0.000132,
-   "landmark_error": 0.000721,
-   "blendshape_error": 0.014271,
-   "turn_ratio_error": 0.000986
+   "landmark_error": 0.00072,
+   "blendshape_error": 0.01432,
+   "turn_ratio_error": 0.000991
   },
   {
    "case": "open0.30",
    "oracle_detected": true,
    "replica_detected": true,
    "blink_error": 5e-06,
-   "landmark_error": 0.000288,
-   "blendshape_error": 0.004335,
+   "landmark_error": 0.000287,
+   "blendshape_error": 0.004339,
    "turn_ratio_error": 0.000143
   },
   {
    "case": "open0.25",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.013634,
+   "blink_error": 0.013626,
    "landmark_error": 0.00117,
-   "blendshape_error": 0.013824,
-   "turn_ratio_error": 0.001121
+   "blendshape_error": 0.013808,
+   "turn_ratio_error": 0.001118
   },
   {
    "case": "open0.20",
@@ -74,71 +74,71 @@
    "replica_detected": true,
    "blink_error": 0.00088,
    "landmark_error": 0.000168,
-   "blendshape_error": 0.001892,
+   "blendshape_error": 0.00189,
    "turn_ratio_error": 2.7e-05
   },
   {
    "case": "open0.15",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001129,
-   "landmark_error": 0.000362,
-   "blendshape_error": 0.010637,
-   "turn_ratio_error": 0.00042
+   "blink_error": 0.001124,
+   "landmark_error": 0.000361,
+   "blendshape_error": 0.010514,
+   "turn_ratio_error": 0.000423
   },
   {
    "case": "open0.10",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000477,
-   "landmark_error": 0.000196,
-   "blendshape_error": 0.003549,
-   "turn_ratio_error": 0.000433
+   "blink_error": 0.000466,
+   "landmark_error": 0.000193,
+   "blendshape_error": 0.003564,
+   "turn_ratio_error": 0.000432
   },
   {
    "case": "open0.05",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000477,
-   "landmark_error": 0.000196,
-   "blendshape_error": 0.003549,
-   "turn_ratio_error": 0.000433
+   "blink_error": 0.000466,
+   "landmark_error": 0.000193,
+   "blendshape_error": 0.003564,
+   "turn_ratio_error": 0.000432
   },
   {
    "case": "open0.02",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000477,
-   "landmark_error": 0.000196,
-   "blendshape_error": 0.003549,
-   "turn_ratio_error": 0.000433
+   "blink_error": 0.000466,
+   "landmark_error": 0.000193,
+   "blendshape_error": 0.003564,
+   "turn_ratio_error": 0.000432
   },
   {
    "case": "shift+30+0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002494,
-   "landmark_error": 0.000458,
-   "blendshape_error": 0.01178,
-   "turn_ratio_error": 0.000888
+   "blink_error": 0.002504,
+   "landmark_error": 0.00046,
+   "blendshape_error": 0.011709,
+   "turn_ratio_error": 0.00089
   },
   {
    "case": "shift-30+0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000779,
-   "landmark_error": 0.000519,
-   "blendshape_error": 0.00744,
-   "turn_ratio_error": 0.000278
+   "blink_error": 0.000703,
+   "landmark_error": 0.000512,
+   "blendshape_error": 0.007521,
+   "turn_ratio_error": 0.000277
   },
   {
    "case": "shift+0+30",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001905,
-   "landmark_error": 0.000359,
-   "blendshape_error": 0.011028,
-   "turn_ratio_error": 0.000849
+   "blink_error": 0.001975,
+   "landmark_error": 0.00036,
+   "blendshape_error": 0.011097,
+   "turn_ratio_error": 0.000851
   },
   {
    "case": "shift+0-30",
@@ -146,206 +146,206 @@
    "replica_detected": true,
    "blink_error": 0.002395,
    "landmark_error": 0.000503,
-   "blendshape_error": 0.004001,
+   "blendshape_error": 0.004002,
    "turn_ratio_error": 0.000217
   },
   {
    "case": "shift+45+45",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000479,
-   "landmark_error": 0.000595,
-   "blendshape_error": 0.023845,
-   "turn_ratio_error": 0.001427
+   "blink_error": 0.00048,
+   "landmark_error": 0.000594,
+   "blendshape_error": 0.023861,
+   "turn_ratio_error": 0.001422
   },
   {
    "case": "scale0.75",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.00063,
-   "landmark_error": 0.000292,
-   "blendshape_error": 0.005323,
-   "turn_ratio_error": 3.6e-05
+   "blink_error": 0.000598,
+   "landmark_error": 0.000303,
+   "blendshape_error": 0.00532,
+   "turn_ratio_error": 1.1e-05
   },
   {
    "case": "scale0.85",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000966,
-   "landmark_error": 0.000181,
-   "blendshape_error": 0.002307,
+   "blink_error": 0.000964,
+   "landmark_error": 0.00018,
+   "blendshape_error": 0.002257,
    "turn_ratio_error": 0.00055
   },
   {
    "case": "scale1.15",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002809,
-   "landmark_error": 0.000533,
-   "blendshape_error": 0.018399,
+   "blink_error": 0.002676,
+   "landmark_error": 0.000525,
+   "blendshape_error": 0.018327,
    "turn_ratio_error": 9.1e-05
   },
   {
    "case": "scale1.30",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.00156,
-   "landmark_error": 0.001921,
-   "blendshape_error": 0.027702,
-   "turn_ratio_error": 0.000533
+   "blink_error": 0.001536,
+   "landmark_error": 0.001924,
+   "blendshape_error": 0.027787,
+   "turn_ratio_error": 0.000538
   },
   {
    "case": "rot-20",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001966,
+   "blink_error": 0.001962,
    "landmark_error": 0.001185,
-   "blendshape_error": 0.00521,
-   "turn_ratio_error": 0.000503
+   "blendshape_error": 0.005213,
+   "turn_ratio_error": 0.000499
   },
   {
    "case": "rot-12",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001335,
-   "landmark_error": 0.001379,
-   "blendshape_error": 0.020691,
-   "turn_ratio_error": 0.002978
+   "blink_error": 0.001355,
+   "landmark_error": 0.001406,
+   "blendshape_error": 0.020839,
+   "turn_ratio_error": 0.002981
   },
   {
    "case": "rot-6",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.00481,
+   "blink_error": 0.004766,
    "landmark_error": 0.000669,
-   "blendshape_error": 0.014659,
-   "turn_ratio_error": 0.000436
+   "blendshape_error": 0.01462,
+   "turn_ratio_error": 0.000429
   },
   {
    "case": "rot+6",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.004614,
-   "landmark_error": 0.000514,
-   "blendshape_error": 0.010404,
-   "turn_ratio_error": 0.00175
+   "blink_error": 0.004626,
+   "landmark_error": 0.000515,
+   "blendshape_error": 0.010429,
+   "turn_ratio_error": 0.001748
   },
   {
    "case": "rot+12",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001155,
-   "landmark_error": 0.000441,
-   "blendshape_error": 0.006764,
-   "turn_ratio_error": 0.000654
+   "blink_error": 0.001154,
+   "landmark_error": 0.000443,
+   "blendshape_error": 0.006752,
+   "turn_ratio_error": 0.000651
   },
   {
    "case": "rot+20",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.005102,
-   "landmark_error": 0.000676,
-   "blendshape_error": 0.020724,
-   "turn_ratio_error": 0.000741
+   "blink_error": 0.005088,
+   "landmark_error": 0.000675,
+   "blendshape_error": 0.020621,
+   "turn_ratio_error": 0.000739
   },
   {
    "case": "res640x480",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001667,
-   "landmark_error": 0.000269,
-   "blendshape_error": 0.002562,
-   "turn_ratio_error": 0.000592
+   "blink_error": 0.001636,
+   "landmark_error": 0.000257,
+   "blendshape_error": 0.002496,
+   "turn_ratio_error": 0.000581
   },
   {
    "case": "res480x640",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002238,
-   "landmark_error": 0.000146,
-   "blendshape_error": 0.003406,
-   "turn_ratio_error": 0.000175
+   "blink_error": 0.002233,
+   "landmark_error": 0.000143,
+   "blendshape_error": 0.003412,
+   "turn_ratio_error": 0.000177
   },
   {
    "case": "res320x240",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.006131,
+   "blink_error": 0.00613,
    "landmark_error": 0.000703,
-   "blendshape_error": 0.008864,
+   "blendshape_error": 0.008863,
    "turn_ratio_error": 0.000883
   },
   {
    "case": "res800x600",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 5.4e-05,
-   "landmark_error": 0.000633,
-   "blendshape_error": 0.014162,
-   "turn_ratio_error": 0.000117
+   "blink_error": 4.5e-05,
+   "landmark_error": 0.00063,
+   "blendshape_error": 0.01414,
+   "turn_ratio_error": 0.000115
   },
   {
    "case": "res1024x768",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.0001,
-   "landmark_error": 0.000232,
-   "blendshape_error": 0.002348,
-   "turn_ratio_error": 1.1e-05
+   "blink_error": 5.1e-05,
+   "landmark_error": 0.000224,
+   "blendshape_error": 0.002194,
+   "turn_ratio_error": 6e-06
   },
   {
    "case": "clip+150+0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000277,
-   "landmark_error": 0.000253,
-   "blendshape_error": 0.002426,
-   "turn_ratio_error": 0.000931
+   "blink_error": 0.000285,
+   "landmark_error": 0.000252,
+   "blendshape_error": 0.002442,
+   "turn_ratio_error": 0.000929
   },
   {
    "case": "clip-150+0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001555,
-   "landmark_error": 0.00094,
-   "blendshape_error": 0.005533,
-   "turn_ratio_error": 0.001557
+   "blink_error": 0.001656,
+   "landmark_error": 0.000953,
+   "blendshape_error": 0.005488,
+   "turn_ratio_error": 0.001562
   },
   {
    "case": "clip+0+140",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000635,
-   "landmark_error": 0.00022,
-   "blendshape_error": 0.004942,
-   "turn_ratio_error": 0.000382
+   "blink_error": 0.000629,
+   "landmark_error": 0.000223,
+   "blendshape_error": 0.00488,
+   "turn_ratio_error": 0.00038
   },
   {
    "case": "clip+0-140",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002098,
+   "blink_error": 0.002099,
    "landmark_error": 0.00051,
-   "blendshape_error": 0.003703,
-   "turn_ratio_error": 0.000307
+   "blendshape_error": 0.003702,
+   "turn_ratio_error": 0.000306
   },
   {
    "case": "bright-60_c1.0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001994,
-   "landmark_error": 0.000718,
-   "blendshape_error": 0.014065,
-   "turn_ratio_error": 0.000271
+   "blink_error": 0.001998,
+   "landmark_error": 0.000712,
+   "blendshape_error": 0.01398,
+   "turn_ratio_error": 0.00028
   },
   {
    "case": "bright+60_c1.0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000233,
-   "landmark_error": 0.001037,
-   "blendshape_error": 0.005992,
-   "turn_ratio_error": 0.001574
+   "blink_error": 0.000255,
+   "landmark_error": 0.001036,
+   "blendshape_error": 0.006027,
+   "turn_ratio_error": 0.001575
   },
   {
    "case": "bright+0_c0.6",
@@ -353,53 +353,53 @@
    "replica_detected": true,
    "blink_error": 0.006842,
    "landmark_error": 0.000841,
-   "blendshape_error": 0.023583,
+   "blendshape_error": 0.023581,
    "turn_ratio_error": 0.000816
   },
   {
    "case": "bright+0_c1.4",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.009266,
-   "landmark_error": 0.000696,
-   "blendshape_error": 0.010357,
-   "turn_ratio_error": 0.001175
+   "blink_error": 0.009261,
+   "landmark_error": 0.000697,
+   "blendshape_error": 0.010348,
+   "turn_ratio_error": 0.001164
   },
   {
    "case": "turn-1.0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002245,
-   "landmark_error": 0.000876,
-   "blendshape_error": 0.011405,
-   "turn_ratio_error": 6e-06
+   "blink_error": 0.00223,
+   "landmark_error": 0.000879,
+   "blendshape_error": 0.011445,
+   "turn_ratio_error": 2.2e-05
   },
   {
    "case": "turn-0.5",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.002496,
+   "blink_error": 0.002494,
    "landmark_error": 0.001228,
-   "blendshape_error": 0.014338,
-   "turn_ratio_error": 0.001841
+   "blendshape_error": 0.014333,
+   "turn_ratio_error": 0.001842
   },
   {
    "case": "turn+0.5",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.001369,
+   "blink_error": 0.00138,
    "landmark_error": 0.000611,
-   "blendshape_error": 0.006007,
-   "turn_ratio_error": 0.000856
+   "blendshape_error": 0.005979,
+   "turn_ratio_error": 0.000857
   },
   {
    "case": "turn+1.0",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 0.000826,
-   "landmark_error": 0.000724,
-   "blendshape_error": 0.005109,
-   "turn_ratio_error": 0.000695
+   "blink_error": 0.000848,
+   "landmark_error": 0.000728,
+   "blendshape_error": 0.005081,
+   "turn_ratio_error": 0.000692
   },
   {
    "case": "noface_flat",
@@ -415,10 +415,10 @@
    "case": "twofaces",
    "oracle_detected": true,
    "replica_detected": true,
-   "blink_error": 1.1e-05,
+   "blink_error": 1e-05,
    "landmark_error": 8.2e-05,
-   "blendshape_error": 0.005074,
-   "turn_ratio_error": 0.000394
+   "blendshape_error": 0.004957,
+   "turn_ratio_error": 0.000419
   }
  ]
 }

@@ -59,6 +59,12 @@ _LANDMARKS_RANGE = (0.0, 1.0)  # mean 0, std 255
 _MIN_DETECTION_SCORE = 0.5
 _MIN_SUPPRESSION = 0.3
 
+# tensors_to_detections_calculator, configured by face_detector_graph.cc for the
+# short-range model: 896 boxes, 16 coords, sigmoid_score, score_clipping_thresh
+# 100.0, reverse_output_order (so coords are x,y,w,h rather than y,x,h,w), and
+# x/y/w/h_scale all kShortRangeImageSize = 128.
+_SCORE_CLIPPING_THRESH = 100.0
+
 # face_landmarker_graph.cc: RectTransformationCalculator scale for the face ROI.
 _ROI_SCALE = 1.5
 
@@ -203,12 +209,19 @@ class LiteRtFaceLandmarker:
             (outputs[0], outputs[1]) if outputs[0].shape[-1] == 16 else (outputs[1], outputs[0])
         )
 
-        logits = np.clip(scores_raw[0, :, 0].astype(np.float32), -100.0, 100.0)
+        # float64 for the sigmoid: at the clipping threshold exp(100) overflows
+        # float32 and warns, even though the result saturates to the right value.
+        logits = np.clip(
+            scores_raw[0, :, 0].astype(np.float64),
+            -_SCORE_CLIPPING_THRESH,
+            _SCORE_CLIPPING_THRESH,
+        )
         scores = 1.0 / (1.0 + np.exp(-logits))
         keep = np.nonzero(scores >= _MIN_DETECTION_SCORE)[0]
         if keep.size == 0:
             return None
 
+        # reverse_output_order: columns are x, y, w, h, then 6 keypoint pairs.
         reg = regressors[0].astype(np.float32)
         cx = reg[:, 0] / _DETECTOR_SIZE + self._anchors[:, 0]
         cy = reg[:, 1] / _DETECTOR_SIZE + self._anchors[:, 1]

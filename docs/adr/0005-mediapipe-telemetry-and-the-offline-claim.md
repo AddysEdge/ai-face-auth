@@ -284,7 +284,7 @@ Two defects were found and fixed:
 |---|---|---|---|
 | as previously built (`warpAffine`, zero border) | 0.10967 | 0.02764 | - |
 | published CPU preprocessing path | 0.01363 | 0.00152 | 0.60527 |
-| + blendshape landmarks denormalized by image size | **0.01363** | **0.00192** | **0.02770** |
+| + blendshape landmarks denormalized by image size | **0.01363** | **0.00192** | **0.02779** |
 
 The second was localised by noticing that blendshape error exploded only on
 non-square images while landmark error stayed below 0.0007;
@@ -293,7 +293,7 @@ which scales `X` by image width and `Y` by image height before the blendshape
 model.
 
 Across 45 deterministic synthetic cases the replica agrees with the oracle to
-0.0136 (blink), 0.0019 (landmarks), 0.0277 (blendshapes) and 0.0030 (head-turn
+0.0136 (blink), 0.0019 (landmarks), 0.0278 (blendshapes) and 0.0030 (head-turn
 ratio, against a 0.045 threshold), with detection agreeing on all 45 including
 both no-face cases. A 0.25 px ROI perturbation alone moves the blink score by
 0.0164, so the residual sits at the pipeline's sub-pixel conditioning floor

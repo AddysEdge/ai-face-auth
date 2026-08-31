@@ -124,8 +124,8 @@ model largely absorbs; on a non-square image it is an anisotropic distortion.
 
 | Metric | Normalized input | Denormalized input |
 |---|---|---|
-| Worst blendshape error | 0.60527 | **0.02770** |
-| Worst blendshape error, non-square cases only | 0.60527 | **0.01416** |
+| Worst blendshape error | 0.60527 | **0.02779** |
+| Worst blendshape error, non-square cases only | 0.60527 | **0.01414** |
 
 ---
 
@@ -145,7 +145,7 @@ Replica: `ai-edge-litert` driving the three `.tflite` files from that same bundl
 |---|---|---|---|
 | Blink score | **0.01363** | `open0.25` | 0.20 wide decision band |
 | Landmark position | **0.00192** | `scale1.30` | normalized; ≈0.9 px at 480 px |
-| Blendshape score | **0.02770** | `scale1.30` | 0–1 |
+| Blendshape score | **0.02779** | `scale1.30` | 0–1 |
 | Head-turn ratio | **0.00298** | `rot-12` | `head_turn_min_swing` = 0.045 |
 | Detection agreement | **45 / 45** | — | includes both no-face cases |
 

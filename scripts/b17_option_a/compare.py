@@ -67,9 +67,6 @@ TOLERANCES: dict[str, float] = {
     "blendshape_error": 0.05,
 }
 
-# Agreement metrics are all-or-nothing: any disagreement is a failure.
-EXACT_AGREEMENT_METRICS = ("detection_agreement", "presence_agreement")
-
 # Metrics every case that yielded a face must carry. A case missing one of
 # these is a failure, not a case to skip over.
 REQUIRED_FACE_METRICS = (

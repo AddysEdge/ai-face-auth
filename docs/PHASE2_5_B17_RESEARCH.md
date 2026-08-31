@@ -216,7 +216,7 @@ present. Each run is a fresh process.
 | Exit code 0 | 20 / 20 |
 | Mode `full` | 20 / 20 |
 | Loopback canary observed | 20 / 20 |
-| Successful OS queries | 8-11 per run, never 0 |
+| Successful OS queries | 8-10 per run, never 0 |
 | Failed OS queries | 0 across all 20 |
 | Command deadline expired | never |
 | **External endpoints observed** | **0 across all 20 runs** |

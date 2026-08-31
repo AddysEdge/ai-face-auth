@@ -313,7 +313,7 @@ graph edge.
 **Network silence, observed.** With `mediapipe` removed and the allowlist empty,
 20 fresh-process FULL-mode runs of `scripts/check_network_activity.py` - in a
 clean environment with `mediapipe` absent from site-packages entirely - each
-returned exit 0 with the loopback canary observed, 8-11 successful OS queries,
+returned exit 0 with the loopback canary observed, 8-10 successful OS queries,
 zero failed queries, no expired deadline, and **zero external endpoints**. Raw
 results: `docs/b17/network_silence_20_runs.json`. Earlier revisions treated the
 absence of telemetry strings in the LiteRT binaries as proof of no endpoints;

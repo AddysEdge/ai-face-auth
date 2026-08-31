@@ -587,6 +587,27 @@ def _run_guard(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _guard_module():
+    """Load the guard once, and reuse its own leaked-file samples.
+
+    The samples deliberately live in the guard rather than here. A file
+    containing a filled consent line or a participant/score table header IS the
+    thing the guard rejects, so writing those literals into this test file made
+    the guard flag this file - correctly. Keeping the one definition inside the
+    single allowlisted file avoids widening the allowlist to cover a test.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("b18_guard", GUARD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _classify(path: str, raw: bytes):
+    return {f.rule for f in _guard_module().classify(path, raw)}
+
+
 def test_the_guard_self_test_passes():
     result = _run_guard("--self-test")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -594,30 +615,37 @@ def test_the_guard_self_test_passes():
 
 
 def test_the_guard_accepts_the_current_tree():
+    """Including this very file: the guard must not flag its own test suite."""
     result = _run_guard()
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def _classify(path: str, raw: bytes):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("b18_guard", GUARD)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return {f.rule for f in module.classify(path, raw)}
-
-
 def test_no_directory_is_broadly_exempt():
     """REGRESSION (F): scripts/b18_stage0/ and tests/test_b18_* were trusted whole."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("b18_guard", GUARD)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _guard_module()
     for path in module.ALLOWLIST:
         assert not path.endswith("/"), f"{path} is a directory exemption"
         assert "*" not in path, f"{path} is a wildcard exemption"
         assert (REPO_ROOT / path).is_file(), f"{path} does not exist"
+    assert len(module.ALLOWLIST) == 1, (
+        "the allowlist should stay at the single file that must embed leaked "
+        f"samples; found {sorted(module.ALLOWLIST)}"
+    )
+
+
+def test_every_self_test_case_is_rejected():
+    """Run the guard's own representative leaked files through classify()."""
+    module = _guard_module()
+    for label, path, raw, expected in module.SELF_TEST_CASES:
+        rules = {f.rule for f in module.classify(path, raw)}
+        assert expected in rules, f"{label}: expected {expected}, got {sorted(rules)}"
+
+
+def test_every_self_test_negative_is_accepted():
+    module = _guard_module()
+    for label, path, raw in module.SELF_TEST_NEGATIVES:
+        rules = {f.rule for f in module.classify(path, raw)}
+        assert not rules, f"{label} was wrongly rejected: {sorted(rules)}"
 
 
 @pytest.mark.parametrize("path", [
@@ -625,28 +653,26 @@ def test_no_directory_is_broadly_exempt():
     "tests/test_b18_leaked.json",
     "docs/b18/leaked.json",
     "leaked.json",
+    "src/faceauth/leaked.json",
 ])
 def test_a_leaked_manifest_is_rejected_under_any_path(path):
-    manifest = json.dumps({
-        "session_id": "S01", "participant_id": "P01",
-        "trials": [{"blink_scores": [0.2, 0.6]}],
-    }).encode("utf-8")
-    assert "manifest-data" in _classify(path, manifest)
+    """REGRESSION (F): no directory is trusted, so location cannot hide data."""
+    assert "manifest-data" in _classify(path, _guard_module()._LEAKED_MANIFEST)
 
 
 @pytest.mark.parametrize("path", [
-    "scripts/b18_stage0/report.md",
-    "tests/test_b18_report.md",
+    "scripts/b18_stage0/evidence.md",
+    "tests/test_b18_evidence.md",
     "docs/stage0_evidence.md",
 ])
 def test_a_generated_report_is_rejected_under_any_path(path):
-    report = (
-        b"SYNTHETIC STAGE 0 EVIDENCE ONLY - B18 REMAINS OPEN.\n\n"
-        b"## Per-participant results (primary)\n\n| P01 | 1/4 |\n"
+    assert "report-signature" in _classify(path, _guard_module()._LEAKED_REPORT)
+
+
+def test_a_report_renamed_to_dodge_the_type_check_is_still_caught():
+    assert "report-signature" in _classify(
+        "scripts/b18_stage0/backup.py", _guard_module()._DISGUISED_REPORT
     )
-    # Either rule is a rejection: a file literally named report.md is also a
-    # published run artifact, and that check runs first.
-    assert _classify(path, report) & {"report-signature", "runtime-artifact"}
 
 
 def test_an_undecodable_file_fails_closed():
@@ -661,6 +687,14 @@ def test_the_real_stage0_source_is_not_flagged():
         assert _classify(path, raw) == set(), f"{path} was wrongly flagged"
 
 
+def test_this_test_suite_is_not_flagged():
+    """The suite that tests the guard must itself stay clean."""
+    for name in ("test_b18_stage0_corrections.py", "test_b18_cleanup.py",
+                 "test_b18_analysis.py", "test_b18_manifest_validator.py"):
+        raw = (REPO_ROOT / "tests" / name).read_bytes()
+        assert _classify(f"tests/{name}", raw) == set(), f"tests/{name} was flagged"
+
+
 def test_the_blank_consent_form_stays_tracked():
     """A template is not a record; the repository must be able to ship it."""
     form = REPO_ROOT / "docs" / "b18" / "forms" / "CONSENT_FORM.md"
@@ -670,8 +704,12 @@ def test_the_blank_consent_form_stays_tracked():
 
 
 def test_a_filled_consent_record_is_rejected():
-    filled = (
-        b"Participant consent record\n\nFull name: A Real Person\n"
-        b"Signature: A Real Person\n"
+    assert "identity-record" in _classify(
+        "docs/b18/forms/signed.md", _guard_module()._LEAKED_CONSENT
     )
-    assert "identity-record" in _classify("docs/b18/forms/signed.md", filled)
+
+
+def test_a_participant_score_table_is_rejected():
+    assert "participant-table" in _classify(
+        "docs/b18/summary.csv", _guard_module()._LEAKED_TABLE
+    )

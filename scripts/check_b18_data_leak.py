@@ -325,6 +325,16 @@ _RENDERING_SOURCE = (
     b'def render():\n    return BANNER\n'
 )
 
+#: The same report renamed to a source extension, carrying a rendered evidence
+#: row. The type check alone would not catch it; the rendered row does.
+#:
+#: Every leaked sample lives here rather than in the test suite, because a file
+#: containing these literals IS what the guard rejects - putting them in
+#: tests/test_b18_stage0_corrections.py made the guard flag that file, which was
+#: correct. Keeping one definition inside the single allowlisted file lets the
+#: tests import them without widening the allowlist to cover a test.
+_DISGUISED_REPORT = _LEAKED_REPORT + b"\n| P01 | 1/4 |\n"
+
 #: Each case is (label, path, bytes, expected rule). The paths deliberately sit
 #: under directories the old guard trusted outright.
 SELF_TEST_CASES = (
@@ -351,8 +361,7 @@ SELF_TEST_CASES = (
     ("undecodable file",
      "docs/notes.md", b"\xff\xfe\x00garbage\xc3\x28", "undecodable"),
     ("report renamed to .py to dodge the type check",
-     "scripts/b18_stage0/report_backup.py",
-     _LEAKED_REPORT + b'\n| P01 | 1/4 |\n', "report-signature"),
+     "scripts/b18_stage0/report_backup.py", _DISGUISED_REPORT, "report-signature"),
 )
 
 #: Files that must be accepted. A guard that rejects the repository's own

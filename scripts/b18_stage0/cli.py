@@ -1,7 +1,8 @@
 """Command line for B18 Stage 0 manifest validation and analysis.
 
-    python -m scripts.b18_stage0.cli validate MANIFEST [MANIFEST ...]
-    python -m scripts.b18_stage0.cli analyse  MANIFEST [MANIFEST ...] [--workspace DIR]
+    python -m scripts.b18_stage0.cli validate         MANIFEST [MANIFEST ...]
+    python -m scripts.b18_stage0.cli analyse          MANIFEST [MANIFEST ...]
+    python -m scripts.b18_stage0.cli rehearse-cleanup
 
 Exit codes
 ----------
@@ -9,21 +10,31 @@ Exit codes
 ``1``  the manifests were read but are not acceptable - schema findings, or a
        corpus that cannot legitimately be aggregated.
 ``2``  the command could not run at all: a missing or unreadable file, invalid
-       UTF-8, duplicate JSON keys, unparseable JSON, or a workspace that failed
-       capability verification.
+       UTF-8, duplicate JSON keys, unparseable JSON, or an output workspace that
+       could not be created or written.
 
 "Your data is wrong" and "I could not look at your data" are different answers,
 and a caller scripting this needs to tell them apart.
 
 Output safety
 -------------
-There is no ``--out``/``--report`` any more. An earlier revision accepted
-arbitrary destinations, which let ``pyproject.toml`` be nominated as a report
-path and let both artefacts resolve to the same file. Instead, results are
-published into a fresh ``run-NNNN`` directory inside a workspace this tool
-created beneath the system temporary directory, under fixed filenames. Both
-artefacts are staged first and the run directory is published by a single
-atomic rename, so a failure cannot leave one finished-looking file behind.
+No option names an output path. An earlier revision accepted arbitrary
+destinations, which let ``pyproject.toml`` be nominated as a report path and let
+both artefacts resolve to the same file; a later one accepted ``--workspace``,
+which a forged marker could satisfy. Both are gone. ``analyse`` creates its own
+workspace beneath the system temporary directory and publishes into a fresh
+``run-NNNN`` inside it, under fixed filenames. Output is left in place for
+review - nothing deletes it.
+
+Nothing is written until the input is fully accepted. Parsing, schema validation
+and corpus validation all complete *before* the workspace is created, so an
+invalid run leaves no directory behind at all: an empty workspace is
+indistinguishable from a run that produced nothing, and that ambiguity is worth
+avoiding. Both artefacts are then staged and published by a single atomic
+rename, so a failure cannot leave one finished-looking file behind.
+
+``rehearse-cleanup`` exercises the deletion procedure. It takes no path, and
+there is no flag that will delete a path you name - see ``cleanup.py``.
 
 Nothing here touches a camera, a network, or any real participant record.
 """
@@ -42,13 +53,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.b18_stage0.analyze import analyse, render_markdown  # noqa: E402
+from scripts.b18_stage0.cleanup import rehearsal_report, rehearse  # noqa: E402
 from scripts.b18_stage0.corpus import CorpusError  # noqa: E402
 from scripts.b18_stage0.schema import ManifestError, require_valid_session  # noqa: E402
 from scripts.b18_stage0.workspace import (  # noqa: E402
     WorkspaceError,
     create_workspace,
     next_run_directory,
-    verify_workspace,
 )
 
 EXIT_OK = 0
@@ -147,25 +158,25 @@ def main(argv: list[str] | None = None) -> int:
 
     analyse_cmd = sub.add_parser("analyse", help="validate, then publish an analysis run")
     analyse_cmd.add_argument("manifests", nargs="+", type=Path)
-    analyse_cmd.add_argument(
-        "--workspace", type=Path, default=None,
-        help="an existing Stage 0 workspace created by this tool; a fresh one is "
-             "created beneath the system temp directory when omitted",
+
+    sub.add_parser(
+        "rehearse-cleanup",
+        help="exercise the deletion procedure on a throwaway directory (takes no path)",
     )
 
     args = parser.parse_args(argv)
 
+    if args.command == "rehearse-cleanup":
+        try:
+            record = rehearse()
+        except OSError as exc:
+            print(f"ERROR: cleanup rehearsal could not run ({exc})", file=sys.stderr)
+            return EXIT_USAGE
+        print(rehearsal_report(record), end="")
+        return EXIT_OK
+
     try:
-        workspace: Path | None = None
-        if args.command == "analyse":
-            workspace = (
-                verify_workspace(args.workspace) if args.workspace is not None
-                else create_workspace()
-            )
         sessions, findings = _validate_all(list(args.manifests))
-    except WorkspaceError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return EXIT_USAGE
     except UsageError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -202,6 +213,15 @@ def main(argv: list[str] | None = None) -> int:
 
     serialised = json.dumps(result, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
     report = render_markdown(result)
+
+    # Only now, with valid input and a rendered result in hand, does anything
+    # touch the filesystem. An invalid run leaves no workspace behind at all:
+    # an empty workspace is indistinguishable from a run that produced nothing.
+    try:
+        workspace = create_workspace()
+    except (OSError, WorkspaceError) as exc:
+        print(f"ERROR: cannot create an output workspace ({exc})", file=sys.stderr)
+        return EXIT_USAGE
 
     try:
         run_dir = _publish(workspace, serialised, report)

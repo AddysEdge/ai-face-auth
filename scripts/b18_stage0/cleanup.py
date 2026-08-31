@@ -14,18 +14,27 @@ retain independent copies. Plan §12.3 ranks the approaches that *are*
 defensible; encryption with key destruction leads that list, and none of them
 is implemented here.
 
-The safety model
-----------------
-An earlier revision let the caller declare any directory a "workspace" and then
-delete inside it. Passing ``Path.home()`` therefore made ``AppData`` and
-``Documents`` legal targets - a real defect, reproduced before this rewrite.
+Why this module takes no path
+-----------------------------
+Two designs were tried and rejected.
 
-Deletion is now **capability-based**, not argument-based. The only thing that
-can be removed is a directory this tool created beneath the system temporary
-directory, carrying the marker and capability token that
-:mod:`scripts.b18_stage0.workspace` wrote. No string a caller passes can
-manufacture that. A path outside such a workspace is refused whatever
-``workspace_root`` is claimed alongside it.
+The first let the caller declare any directory a "workspace" and delete inside
+it. Passing ``Path.home()`` made ``AppData`` and ``Documents`` legal targets.
+
+The second required a marker file carrying a random token, and called that a
+capability. **It was not one.** The marker lived entirely inside the directory
+being checked, so it was self-authenticating: anyone able to create a directory
+could equally create the marker, and a forged pair verified exactly like a real
+one. That was demonstrated, not theorised - a forged directory passed
+verification and its contents were accepted as a deletion target.
+
+A token that travels with the thing it protects proves nothing about it. The
+fix is not a better token: it is to stop accepting the question. **No function
+here takes a filesystem path from a caller.** :func:`rehearse` creates its own
+temporary directory, deletes that directory, and reports what it did. There is
+no API - and no CLI flag - that will delete a path you name. The checks below
+still run, as defence in depth, against a directory this module itself created
+moments earlier.
 """
 
 from __future__ import annotations
@@ -33,15 +42,16 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from scripts.b18_stage0.workspace import (
     REPO_ROOT,
+    WORKSPACE_PREFIX,
     WorkspaceError,
     contains_reparse_point,
     system_temp_root,
-    verify_workspace,
 )
 
 DISCLAIMER = (
@@ -50,10 +60,8 @@ DISCLAIMER = (
     "reach of file-level tools. No secure-erasure claim is made."
 )
 
-
-class UnsafeTarget(Exception):
-    """The requested deletion target was refused. Nothing was removed."""
-
+#: Prefix for the throwaway directory a rehearsal creates and destroys.
+REHEARSAL_PREFIX = "b18_stage0_rehearsal_"
 
 USER_DATA_FOLDERS = (
     "AppData",
@@ -63,6 +71,10 @@ USER_DATA_FOLDERS = (
     "Pictures",
     "Videos",
 )
+
+
+class UnsafeTarget(Exception):
+    """A deletion was refused. Nothing was removed."""
 
 
 def _redirection_roots(home: Path) -> set[Path]:
@@ -96,12 +108,16 @@ def _redirection_roots(home: Path) -> set[Path]:
 
 
 def _forbidden_paths() -> set[Path]:
-    """Paths that must never be a deletion target, whatever a caller passes."""
+    """Paths that must never be deleted, whatever else is true.
+
+    Defence in depth. The primary protection is that no caller can name a path
+    at all; this list exists so that a future refactor reintroducing a path
+    argument still cannot reach anything that matters.
+    """
     home = Path.home().resolve()
     forbidden = {REPO_ROOT, home, Path.cwd().resolve(), system_temp_root()}
     forbidden |= set(REPO_ROOT.parents)
     forbidden |= set(home.parents)
-    # Named explicitly because these were the paths the previous model accepted.
     for root in {home, *_redirection_roots(home)}:
         forbidden.add(root)
         forbidden |= set(root.parents)
@@ -110,25 +126,17 @@ def _forbidden_paths() -> set[Path]:
     return forbidden
 
 
-def assert_safe_target(target: Path, workspace: Path) -> Path:
-    """Vet a deletion target against a tool-created workspace.
+def _assert_disposable(target: Path, created: Path) -> Path:
+    """Vet a directory this module created moments ago, before removing it.
 
-    ``workspace`` must pass :func:`verify_workspace` - it is not enough for the
-    caller to say a directory is a workspace. ``target`` must then be a real
-    directory strictly inside it, free of links at every level.
+    ``created`` is the directory :func:`rehearse` made in this same call. It is
+    not caller input, and this function is private precisely so that it cannot
+    quietly become caller input again.
     """
-    try:
-        verified_workspace = verify_workspace(workspace)
-    except WorkspaceError as exc:
-        raise UnsafeTarget(
-            f"refusing: {workspace} is not a tool-created Stage 0 workspace ({exc})"
-        ) from exc
-
     if contains_reparse_point(target) is not None:
         raise UnsafeTarget(f"refusing a symlink, junction or reparse point at or below: {target}")
 
     resolved = target.resolve()
-
     if not resolved.is_absolute():
         raise UnsafeTarget(f"refusing a non-absolute target: {target}")
     if resolved == resolved.anchor or resolved.parent == resolved:
@@ -141,15 +149,14 @@ def assert_safe_target(target: Path, workspace: Path) -> Path:
         )
     if resolved == REPO_ROOT or REPO_ROOT in resolved.parents:
         raise UnsafeTarget(f"refusing a target inside the repository: {resolved}")
-    if resolved == verified_workspace:
+    if system_temp_root() not in resolved.parents:
+        raise UnsafeTarget(f"refusing a target outside the system temp root: {resolved}")
+    if not resolved.name.startswith((REHEARSAL_PREFIX, WORKSPACE_PREFIX)):
+        raise UnsafeTarget(f"refusing a directory this tool did not create: {resolved}")
+    if resolved != created.resolve():
         raise UnsafeTarget(
-            f"refusing the workspace root here; use remove_workspace_root() to "
-            f"dispose of the whole workspace: {resolved}"
-        )
-    if verified_workspace not in resolved.parents:
-        raise UnsafeTarget(
-            f"refusing a target outside the verified workspace: {resolved} is not "
-            f"inside {verified_workspace}"
+            f"refusing {resolved}: a rehearsal may only delete the directory it "
+            f"created during this same call ({created.resolve()})"
         )
     if not resolved.exists():
         raise UnsafeTarget(f"refusing a target that does not exist: {resolved}")
@@ -158,44 +165,66 @@ def assert_safe_target(target: Path, workspace: Path) -> Path:
     return resolved
 
 
-def _record(resolved: Path, removed: list[str]) -> dict[str, Any]:
-    return {
-        "target": str(resolved),
-        "files_removed": len(removed),
-        "entries_removed": removed,
-        "verified_absent": not resolved.exists(),
-        "secure_erasure_claimed": False,
-        "disclaimer": DISCLAIMER,
-    }
+def rehearse() -> dict[str, Any]:
+    """Create a throwaway directory, delete it, and report what happened.
 
-
-def _entries(root: Path) -> list[str]:
-    return sorted(str(p.relative_to(root).as_posix()) for p in root.rglob("*") if p.is_file())
-
-
-def remove_workspace(target: Path, workspace: Path) -> dict[str, Any]:
-    """Remove a vetted directory *inside* a tool-created workspace."""
-    resolved = assert_safe_target(target, workspace)
-    removed = _entries(resolved)
-    shutil.rmtree(resolved)
-    return _record(resolved, removed)
-
-
-def remove_workspace_root(workspace: Path) -> dict[str, Any]:
-    """Dispose of an entire tool-created workspace.
-
-    Separated from :func:`remove_workspace` deliberately: removing the root is a
-    different, larger act than removing a run inside it, and the API says which
-    one the caller meant rather than inferring it.
+    Takes no arguments by design: there is no path a caller can supply, so there
+    is no path a caller can have deleted. The contents are synthetic files this
+    function writes itself - never a manifest, never a real record.
     """
+    created = Path(tempfile.mkdtemp(prefix=REHEARSAL_PREFIX))
+    written: list[str] = []
     try:
-        verified = verify_workspace(workspace)
-    except WorkspaceError as exc:
-        raise UnsafeTarget(
-            f"refusing: {workspace} is not a tool-created Stage 0 workspace ({exc})"
-        ) from exc
-    if verified in _forbidden_paths():
-        raise UnsafeTarget(f"refusing a protected path: {verified}")
-    removed = _entries(verified)
-    shutil.rmtree(verified)
-    return _record(verified, removed)
+        (created / "nested").mkdir()
+        for relative, body in (
+            ("placeholder.json", '{"note": "synthetic Stage 0 rehearsal placeholder"}\n'),
+            ("nested/placeholder.txt", "synthetic Stage 0 rehearsal content\n"),
+        ):
+            (created / relative).write_text(body, encoding="utf-8", newline="\n")
+            written.append(relative)
+
+        target = _assert_disposable(created, created)
+        removed = sorted(
+            str(path.relative_to(target)).replace("\\", "/") for path in target.rglob("*")
+        )
+        shutil.rmtree(target)
+        return {
+            "rehearsal": "stage0-cleanup",
+            "created_under_system_temp": True,
+            "files_created": sorted(written),
+            "entries_removed": removed,
+            "directory_removed": not target.exists(),
+            "caller_supplied_path": None,
+            "accepts_caller_path": False,
+            "secure_erasure": False,
+            "disclaimer": DISCLAIMER,
+        }
+    finally:
+        # A failure anywhere above must not leave the throwaway behind.
+        if created.exists():
+            shutil.rmtree(created, ignore_errors=True)
+
+
+def rehearsal_report(record: dict[str, Any]) -> str:
+    """Render a rehearsal record for a human, disclaimer included."""
+    lines = [
+        "B18 Stage 0 - cleanup procedure rehearsal",
+        "",
+        f"  directory removed : {record['directory_removed']}",
+        f"  entries removed   : {len(record['entries_removed'])}",
+        f"  caller path used  : {record['caller_supplied_path']}",
+        "",
+        DISCLAIMER,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+__all__ = [
+    "DISCLAIMER",
+    "REHEARSAL_PREFIX",
+    "USER_DATA_FOLDERS",
+    "UnsafeTarget",
+    "WorkspaceError",
+    "rehearsal_report",
+    "rehearse",
+]

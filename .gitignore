@@ -38,6 +38,7 @@ templates/
 b18_data/
 b18_workspace/
 b18_stage0_*/
+b18_stage0_rehearsal_*/
 *.manifest.json
 *manifest*.json
 *participant*.json

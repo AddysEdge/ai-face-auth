@@ -227,6 +227,14 @@ The canary and the poll counts are what keep that zero from being vacuous: a
 broken observer would report zero connections too, which is exactly how this
 check once fooled itself.
 
+The probe drives the **real** liveness provider — `new_challenge` / `observe` /
+`finalize` plus teardown — against a procedurally drawn synthetic face rather
+than a blank frame. That matters: on a blank frame the detector finds nothing
+and `observe()` returns early, so the landmark and blendshape models would load
+but never run inference, and a runtime that only phoned home after doing real
+work would go unobserved. The run output prints the liveness reason, so a
+regression back to a blank-frame probe is visible rather than silent.
+
 ## 8. Reproducing this
 
 ```

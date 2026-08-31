@@ -40,10 +40,16 @@ check plan section 16 first.
 
 ## Stage 0 tooling
 
-`scripts/b18_stage0/` implements the Stage 0 dry run: manifest validation
-against `forms/TRIAL_MANIFEST_SCHEMA.md`, deterministic aggregate analysis, and
-a guarded rehearsal of the workspace-deletion step. See the plan's Stage 0
-section for commands and exit codes.
+`scripts/b18_stage0/` implements the Stage 0 dry run: strict whitelist
+validation against `forms/TRIAL_MANIFEST_SCHEMA.md`, cross-session
+comparability checks, deterministic aggregate analysis, and a capability-based
+rehearsal of the workspace-deletion step. See the plan's Stage 0 section for
+commands and exit codes.
+
+It accepts **only** manifests declaring
+`"data_classification": "synthetic_stage0"`. Feeding it real Stage 1 or Stage 2
+data is not a configuration change - it requires a separate, owner-authorized,
+reviewed change.
 
 It has run only against the invented manifests in
 `scripts/b18_stage0/synthetic.py`. **No real input exists, and the tooling

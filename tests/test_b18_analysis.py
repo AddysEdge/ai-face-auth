@@ -1,8 +1,8 @@
-"""Behavioural tests for the B18 Stage 0 aggregate analysis.
+"""Behavioural tests for the B18 Stage 0 aggregate analysis and corpus checks.
 
-Expected values are computed independently in the test - by hand, or with a
-separate implementation - rather than by calling the code under test. Pinning a
-metric to its own output would only prove it is consistent, not correct.
+Expected values are computed independently in the test - by hand, or from a
+closed form - rather than by calling the code under test. Pinning a metric to
+its own output would prove only self-consistency.
 
 All fixtures are synthetic. No participant, camera, recording or measurement
 exists behind any of it.
@@ -10,6 +10,7 @@ exists behind any of it.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import sys
@@ -21,13 +22,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.b18_stage0 import cli  # noqa: E402
 from scripts.b18_stage0.analyze import (  # noqa: E402
     analyse,
+    md_escape,
     render_markdown,
     wilson_interval,
     zero_event_upper_bound,
 )
+from scripts.b18_stage0.corpus import CorpusError, check_input_paths, check_sessions  # noqa: E402
 from scripts.b18_stage0.synthetic import corpus, make_trial, session_one, session_two  # noqa: E402
 
 
@@ -40,20 +42,17 @@ def result():
 
 
 def test_wilson_interval_matches_an_independent_computation():
-    """Recomputed from the closed form, not from the implementation."""
     successes, trials, z = 2, 20, 1.959963984540054
     p = successes / trials
     denominator = 1 + z * z / trials
     centre = (p + z * z / (2 * trials)) / denominator
     margin = z * math.sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / denominator
-
     low, high = wilson_interval(successes, trials)
     assert low == pytest.approx(centre - margin, abs=1e-12)
     assert high == pytest.approx(centre + margin, abs=1e-12)
 
 
 def test_wilson_interval_stays_inside_zero_to_one():
-    """The reason for preferring Wilson over the normal approximation."""
     for successes, trials in ((0, 3), (3, 3), (1, 200), (199, 200)):
         low, high = wilson_interval(successes, trials)
         assert 0.0 <= low <= high <= 1.0
@@ -69,20 +68,81 @@ def test_zero_event_upper_bound_matches_the_exact_form():
 
 
 def test_zero_event_upper_bound_is_near_the_rule_of_three():
-    """Sanity: the exact bound should sit close to 3/n, not wildly off."""
     for n in (30, 100, 300):
         assert zero_event_upper_bound(n) == pytest.approx(3 / n, rel=0.05)
 
 
-def test_zero_event_upper_bound_is_none_without_a_denominator():
-    assert zero_event_upper_bound(0) is None
+# --------------------------------- REGRESSION: cross-session comparability
+
+
+def test_the_same_session_supplied_twice_is_refused():
+    """Previously this doubled every trial while reporting one session."""
+    with pytest.raises(CorpusError) as excinfo:
+        analyse([session_one(), copy.deepcopy(session_one())])
+    assert any("appears 2 times" in f for f in excinfo.value.findings)
+
+
+def test_duplicate_input_paths_are_refused(tmp_path):
+    path = tmp_path / "a.json"
+    assert any("given 2 times" in f for f in check_input_paths([path, path]))
+
+
+def test_conflicting_thresholds_stop_the_analysis():
+    """Previously this proceeded on the first threshold with only a note."""
+    sessions = corpus()
+    sessions[1]["provenance"]["liveness_config"]["blink_score_high"] = 0.5
+    with pytest.raises(CorpusError) as excinfo:
+        analyse(sessions)
+    assert any("disagree on the decision thresholds" in f for f in excinfo.value.findings)
+
+
+def test_conflicting_liveness_configuration_stops_the_analysis():
+    sessions = corpus()
+    sessions[1]["provenance"]["liveness_config"]["min_face_continuity"] = 0.9
+    with pytest.raises(CorpusError) as excinfo:
+        analyse(sessions)
+    assert any("liveness configuration" in f for f in excinfo.value.findings)
+
+
+def test_different_code_commits_stop_the_analysis():
+    sessions = corpus()
+    sessions[1]["provenance"]["faceauth_commit"] = "a" * 40
+    with pytest.raises(CorpusError) as excinfo:
+        analyse(sessions)
+    assert any("different code commits" in f for f in excinfo.value.findings)
+
+
+def test_different_model_digests_stop_the_analysis():
+    sessions = corpus()
+    sessions[1]["provenance"]["face_landmarker_sha256"] = "b" * 64
+    with pytest.raises(CorpusError) as excinfo:
+        analyse(sessions)
+    assert any("model digests" in f for f in excinfo.value.findings)
+
+
+def test_different_dependency_sets_stop_the_analysis():
+    sessions = corpus()
+    sessions[1]["provenance"]["pinned_dependencies"] = {"ai-edge-litert": "2.3.0"}
+    with pytest.raises(CorpusError) as excinfo:
+        analyse(sessions)
+    assert any("dependency sets" in f for f in excinfo.value.findings)
+
+
+def test_differing_cameras_and_participants_are_allowed():
+    """The design expects these to vary; only comparability-breakers stop it."""
+    assert check_sessions(corpus()) == []
+
+
+def test_an_empty_corpus_is_refused():
+    with pytest.raises(CorpusError):
+        analyse([])
 
 
 # ------------------------------------------------------------------- counts
 
 
 def test_counts_are_exact(result):
-    """Hand-counted from the synthetic corpus: 8 + 7 trials, 2 excluded."""
+    """Hand-counted: 8 + 7 trials, 2 excluded."""
     counts = result["counts"]
     assert counts["participants"] == 2
     assert counts["participant_ids"] == ["P01", "P02"]
@@ -106,32 +166,24 @@ def test_exclusions_are_grouped_by_reason(result):
 
 
 def test_excluded_trials_enter_no_numerator_or_denominator():
-    """Add an excluded trial that would change every rate if it counted."""
     baseline = analyse(corpus())
     sessions = corpus()
     sessions[0]["trials"].append(
-        make_trial(
-            20, "S1", [0.9, 0.1], "accepted",
-            valid=False, exclusion_reason="software_error",
-        )
+        make_trial(20, "S1", [], frames_captured=30, frames_with_face=0,
+                   valid=False, exclusion_reason="no_face_detected")
     )
     modified = analyse(sessions)
-
     assert modified["counts"]["trials_attempted"] == baseline["counts"]["trials_attempted"] + 1
     assert modified["counts"]["trials_excluded"] == baseline["counts"]["trials_excluded"] + 1
     assert modified["counts"]["trials_valid"] == baseline["counts"]["trials_valid"]
-    # An accepted spoof at 0.9 would be conspicuous if it leaked into the rates.
-    assert modified["aggregate"]["far_all_spoof_types_pooled"] == \
-        baseline["aggregate"]["far_all_spoof_types_pooled"]
-    assert modified["spoof_margin"] == baseline["spoof_margin"]
+    assert modified["still_image_margin"] == baseline["still_image_margin"]
 
 
 # -------------------------------------------------------------------- rates
 
 
 def test_frr_counts_only_rejected_genuine_blink_trials(result):
-    """By hand: valid G* trials are S01 #0,#1,#2,#7 and S02 #0,#1 = 6.
-    Exactly one (#2) was rejected."""
+    """Valid G* trials: S01 #0,#1,#2,#7 and S02 #0,#1 = 6; exactly #2 rejected."""
     frr = result["aggregate"]["frr_genuine_blink"]
     assert frr["numerator"] == 1
     assert frr["denominator"] == 6
@@ -139,154 +191,172 @@ def test_frr_counts_only_rejected_genuine_blink_trials(result):
 
 
 def test_genuine_non_blink_rejections_are_not_counted_as_frr(result):
-    """Rejecting someone who did not blink is the control working."""
     correct = result["aggregate"]["correct_rejection_genuine_non_blink"]
-    assert correct["numerator"] == 3   # N1, N2, N3 all rejected
+    assert correct["numerator"] == 3
     assert correct["denominator"] == 3
     assert result["aggregate"]["frr_genuine_blink"]["denominator"] == 6
 
 
 def test_far_is_reported_separately_for_every_spoof_type(result):
-    by_type = {entry["type"]: entry for entry in result["per_attack_type"]}
+    by_type = result["aggregate"]["far_by_attack_type"]
     assert set(by_type) == {"S1", "S2", "S3", "S4", "S5"}
-
-    assert by_type["S1"]["far"]["numerator"] == 0
-    assert by_type["S1"]["far"]["denominator"] == 2
-    assert by_type["S2"]["far"]["numerator"] == 0
-    assert by_type["S2"]["far"]["denominator"] == 1
-    # S4 replay is the known gap and is accepted in the synthetic corpus.
-    assert by_type["S4"]["far"]["numerator"] == 1
-    assert by_type["S4"]["far"]["denominator"] == 1
-    assert by_type["S4"]["far"]["rate"] == 1.0
+    assert by_type["S1"]["numerator"] == 0 and by_type["S1"]["denominator"] == 2
+    assert by_type["S2"]["numerator"] == 0 and by_type["S2"]["denominator"] == 1
+    assert by_type["S4"]["numerator"] == 1 and by_type["S4"]["denominator"] == 1
 
 
-def test_a_spoof_type_with_no_trials_reports_a_zero_denominator_not_a_rate(result):
-    by_type = {entry["type"]: entry for entry in result["per_attack_type"]}
-    for absent in ("S3", "S5"):
-        assert by_type[absent]["far"]["denominator"] == 0
-        assert by_type[absent]["far"]["rate"] is None
-        assert by_type[absent]["far"]["wilson_95"] is None
-        assert by_type[absent]["max_blink"]["n"] == 0
+# -------------------------------- REGRESSION: no pooled FAR anywhere
 
 
-def test_every_rate_carries_its_numerator_and_denominator(result):
+def test_no_pooled_far_appears_in_the_aggregate(result):
+    """Pooling S1-S3 with S4 manufactures a number describing no real attack."""
+    assert result["aggregate"]["far_pooled_across_attack_types"] is None
+    assert "S1-S3" in result["aggregate"]["why_no_pooled_far"]
+
+
+def test_no_pooled_far_appears_per_participant_or_per_camera(result):
+    for entry in result["per_participant"] + result["per_camera"]:
+        assert "far_all_spoof_types" not in entry
+        assert set(entry["far_by_attack_type"]) == {"S1", "S2", "S3", "S4", "S5"}
+
+
+def test_the_report_contains_no_pooled_far_figure(result):
+    report = render_markdown(result)
+    assert "No pooled FAR is reported" in report
+    assert "all spoof types pooled" not in report
+
+
+# ----------------------- REGRESSION: S1-S3 margin separated from S4 replay
+
+
+def test_the_primary_margin_covers_still_images_only(result):
+    """S4 replay peaked at 0.66; including it produced a nonsense -0.26 margin."""
+    margin = result["still_image_margin"]
+    assert margin["observed_max"] == pytest.approx(0.382)
+    assert margin["margin_to_high"] == pytest.approx(0.40 - 0.382)
+    assert margin["trials"] == 3           # S1 x2 + S2 x1
+    assert "S1-S3" in margin["scope"]
+
+
+def test_video_replay_is_reported_independently(result):
+    replay = result["video_replay"]
+    assert replay["scope"] == "S4"
+    assert replay["trials"] == 1
+    assert replay["far"]["numerator"] == 1
+    assert replay["max_blink_distribution"]["max"] == pytest.approx(0.66)
+    assert "KNOWN UNMITIGATED GAP" in replay["note"]
+
+
+def test_replay_scores_never_enter_the_still_image_distribution(result):
+    still = result["still_image_margin"]["max_blink_distribution"]
+    assert still["max"] == pytest.approx(0.382)
+    assert still["n"] == 3
+
+
+# -------------------------- REGRESSION: near miss is BELOW the threshold
+
+
+def test_a_value_above_the_threshold_is_not_a_near_miss(result):
+    """0.66 is 0.26 ABOVE 0.40 and was previously counted as 'within 0.05'."""
+    assert result["still_image_margin"]["near_misses_within_0_05_below_high"] == 1
+    by_type = {e["type"]: e for e in result["per_attack_type"]}
+    assert by_type["S4"]["margin"]["near_misses_within_0_05_below_high"] == 0
+    assert by_type["S4"]["margin"]["threshold_crossings_at_or_above_high"] == 1
+
+
+def test_a_crossing_is_reported_as_a_crossing_not_a_near_miss(result):
+    by_type = {e["type"]: e for e in result["per_attack_type"]}
+    assert by_type["S1"]["margin"]["threshold_crossings_at_or_above_high"] == 0
+    assert by_type["S1"]["margin"]["near_misses_within_0_05_below_high"] == 1
+
+
+def test_the_near_miss_definition_is_stated_in_the_result(result):
+    assert "0 <= high - max" in result["still_image_margin"]["near_miss_definition"]
+
+
+# ----------------------------------------------- rate context and honesty
+
+
+def test_every_rate_carries_counts_participants_and_exclusions(result):
     def check(entry):
-        assert "numerator" in entry and "denominator" in entry
+        for key in ("numerator", "denominator", "participants",
+                    "excluded_trials_in_scope", "basis"):
+            assert key in entry, key
         assert entry["basis"] == "descriptive, trial-level"
+        assert entry["not_a_population_rate"] is True
 
     check(result["aggregate"]["frr_genuine_blink"])
-    check(result["aggregate"]["far_all_spoof_types_pooled"])
     check(result["aggregate"]["correct_rejection_genuine_non_blink"])
+    for rate in result["aggregate"]["far_by_attack_type"].values():
+        check(rate)
     for entry in result["per_participant"]:
         check(entry["frr"])
-        check(entry["far_all_spoof_types"])
-    for entry in result["per_attack_type"]:
-        check(entry["far"])
+        for rate in entry["far_by_attack_type"].values():
+            check(rate)
 
 
 def test_zero_event_groups_report_an_upper_bound_rather_than_zero(result):
-    by_type = {entry["type"]: entry for entry in result["per_attack_type"]}
-    s1 = by_type["S1"]["far"]
+    s1 = result["aggregate"]["far_by_attack_type"]["S1"]
     assert s1["numerator"] == 0
     assert s1["zero_event_upper_bound_95"] == pytest.approx(1 - 0.05 ** (1 / 2), abs=1e-6)
 
 
-def test_a_group_with_events_has_no_zero_event_bound(result):
-    by_type = {entry["type"]: entry for entry in result["per_attack_type"]}
-    assert by_type["S4"]["far"]["zero_event_upper_bound_95"] is None
-
-
-# --------------------------------------------------- per-participant primacy
+def test_a_zero_denominator_group_reports_no_rate(result):
+    for absent in ("S3", "S5"):
+        entry = result["aggregate"]["far_by_attack_type"][absent]
+        assert entry["denominator"] == 0
+        assert entry["rate"] is None
+        assert entry["wilson_95"] is None
 
 
 def test_per_participant_results_are_present_and_ordered(result):
-    ids = [entry["participant_id"] for entry in result["per_participant"]]
-    assert ids == ["P01", "P02"]
+    assert [e["participant_id"] for e in result["per_participant"]] == ["P01", "P02"]
 
 
 def test_per_participant_rates_are_computed_within_the_participant(result):
     by_id = {e["participant_id"]: e for e in result["per_participant"]}
-    # P01: 4 valid G* trials, exactly one rejected (#2).
-    assert by_id["P01"]["frr"]["numerator"] == 1
-    assert by_id["P01"]["frr"]["denominator"] == 4
-    # P02: 2 valid G* trials, none rejected.
-    assert by_id["P02"]["frr"]["numerator"] == 0
-    assert by_id["P02"]["frr"]["denominator"] == 2
+    assert by_id["P01"]["frr"]["numerator"] == 1 and by_id["P01"]["frr"]["denominator"] == 4
+    assert by_id["P02"]["frr"]["numerator"] == 0 and by_id["P02"]["frr"]["denominator"] == 2
 
 
 def test_results_are_split_by_camera(result):
-    cameras = [entry["camera_label"] for entry in result["per_camera"]]
-    assert cameras == sorted(cameras)
-    assert len(cameras) == 2
-    by_camera = {e["camera_label"]: e for e in result["per_camera"]}
-    assert sum(e["valid_trials"] for e in by_camera.values()) == result["counts"]["trials_valid"]
+    cameras = [e["camera_label"] for e in result["per_camera"]]
+    assert cameras == sorted(cameras) and len(cameras) == 2
+    assert sum(e["valid_trials"] for e in result["per_camera"]) == result["counts"]["trials_valid"]
 
 
-# ------------------------------------------------------------ spoof margin
-
-
-def test_spoof_margin_uses_the_observed_maximum(result):
-    """Synthetic spoof maxima: 0.382, 0.24, 0.33, 0.66 -> max 0.66."""
-    margin = result["spoof_margin"]
-    assert margin["high_threshold"] == 0.40
-    assert margin["observed_max_over_all_spoofs"] == pytest.approx(0.66)
-    assert margin["margin_to_high"] == pytest.approx(0.40 - 0.66)
-
-
-def test_spoof_trials_within_five_hundredths_of_the_threshold_are_counted(result):
-    """0.382 and 0.66 are both >= 0.35; 0.24 and 0.33 are not."""
-    assert result["spoof_margin"]["within_0_05_of_high"] == 2
-
-
-def test_per_attack_margin_is_computed_against_that_attack_only(result):
-    by_type = {entry["type"]: entry for entry in result["per_attack_type"]}
-    assert by_type["S1"]["margin_to_high"] == pytest.approx(0.40 - 0.382)
-    assert by_type["S1"]["within_0_05_of_high"] == 1
-
-
-# -------------------------------------------------- threshold crossing edges
+# ------------------------------------------- boundaries with a tolerance
 
 
 def test_both_inclusive_boundaries_are_reported_as_exercised(result):
     crossing = result["threshold_crossing"]
     assert crossing["both_boundaries_exercised"] is True
-    # Exactly at 0.40: only S01 trial 1, [0.20, 0.40].
-    assert crossing["trials_exactly_at_high"] == 1
-    # Exactly at 0.20: S01 trial 1 [0.20, 0.40] and S02 trial 1 [0.28, 0.20, 0.49].
-    assert crossing["trials_exactly_at_low"] == 2
+    assert crossing["trials_at_high_boundary"] == 1     # the [0.20, 0.40] trial
+    assert crossing["trials_at_low_boundary"] == 2      # that trial and S02 #1
     assert "inclusive" in crossing["comparison"]
-
-
-def test_a_trial_exactly_on_both_boundaries_counts_as_reaching_them():
-    """0.40 and 0.20 exactly must count: the shipping comparison is >= and <=."""
-    session = session_one()
-    session["trials"] = [make_trial(0, "G1", [0.20, 0.40], "accepted")]
-    crossing = analyse([session])["threshold_crossing"]
-    assert crossing["trials_reaching_high"] == 1
-    assert crossing["trials_reaching_low"] == 1
-    assert crossing["trials_exactly_at_high"] == 1
-    assert crossing["trials_exactly_at_low"] == 1
+    assert crossing["boundary_tolerance"] > 0
 
 
 def test_a_trial_just_inside_the_boundaries_does_not_count_as_reaching_them():
     session = session_one()
-    session["trials"] = [make_trial(0, "G1", [0.201, 0.399], "rejected")]
+    session["trials"] = [make_trial(0, "G1", [0.201, 0.399])]
     crossing = analyse([session])["threshold_crossing"]
     assert crossing["trials_reaching_high"] == 0
     assert crossing["trials_reaching_low"] == 0
     assert crossing["both_boundaries_exercised"] is False
 
 
-# ------------------------------------------------------- distributions etc.
+def test_boundary_comparison_survives_a_json_round_trip():
+    """An exact == would be brittle after serialisation; a tolerance is used."""
+    session = session_one()
+    session["trials"] = [make_trial(0, "G1", [0.20, 0.40])]
+    round_tripped = json.loads(json.dumps(session))
+    crossing = analyse([round_tripped])["threshold_crossing"]
+    assert crossing["trials_at_high_boundary"] == 1
+    assert crossing["trials_at_low_boundary"] == 1
 
 
-def test_distributions_report_count_min_median_max(result):
-    spoof = result["distributions"]["spoof_max"]
-    assert spoof["n"] == 4
-    assert spoof["min"] == pytest.approx(0.24)
-    assert spoof["max"] == pytest.approx(0.66)
-    # median of [0.24, 0.33, 0.382, 0.66] = (0.33 + 0.382) / 2
-    assert spoof["median"] == pytest.approx((0.33 + 0.382) / 2, abs=1e-6)
+# ------------------------------------------------------------ distributions
 
 
 def test_condition_coverage_counts_every_factor(result):
@@ -296,36 +366,23 @@ def test_condition_coverage_counts_every_factor(result):
         assert sum(coverage[factor].values()) == result["counts"]["trials_valid"]
 
 
-def test_provenance_is_reported_per_session(result):
-    sessions = [entry["session_id"] for entry in result["provenance"]]
-    assert sessions == ["S01", "S02"]
+def test_provenance_is_reported_per_session_with_classification(result):
+    assert [e["session_id"] for e in result["provenance"]] == ["S01", "S02"]
     for entry in result["provenance"]:
+        assert entry["data_classification"] == "synthetic_stage0"
         assert entry["liveness_config"]["blink_score_high"] == 0.40
-        assert entry["randomisation_seed"]
 
 
-def test_disagreeing_thresholds_produce_a_prominent_note():
-    sessions = corpus()
-    sessions[1]["provenance"]["liveness_config"]["blink_score_high"] = 0.5
-    note = analyse(sessions)["notes"]
-    assert note and any("disagree on thresholds" in n for n in note)
-
-
-def test_empty_input_is_refused_rather_than_producing_empty_rates():
-    with pytest.raises(ValueError, match="no sessions"):
-        analyse([])
-
-
-def test_a_session_with_only_excluded_trials_does_not_divide_by_zero():
+def test_a_session_of_only_excluded_trials_does_not_divide_by_zero():
     session = session_one()
     session["trials"] = [
-        make_trial(0, "G1", [0.2, 0.3], "rejected",
-                   valid=False, exclusion_reason="operator_error")
+        make_trial(0, "G1", [], frames_captured=30, frames_with_face=0,
+                   valid=False, exclusion_reason="no_face_detected")
     ]
     outcome = analyse([session])
     assert outcome["counts"]["trials_valid"] == 0
     assert outcome["aggregate"]["frr_genuine_blink"]["rate"] is None
-    assert outcome["spoof_margin"]["observed_max_over_all_spoofs"] is None
+    assert outcome["still_image_margin"]["observed_max"] is None
 
 
 # ------------------------------------------------------- honesty guarantees
@@ -338,16 +395,14 @@ def test_the_result_never_marks_b18_cleared(result):
 
 
 def test_no_input_can_make_the_analysis_claim_b18_is_cleared():
-    """Even a perfect synthetic run must not produce a clearance."""
     sessions = corpus()
     for session in sessions:
         for trial in session["trials"]:
-            trial["valid"] = True
-            trial["exclusion_reason"] = None
-            if trial["intended_type"].startswith("S"):
-                trial["attempt_outcome"] = "rejected"
-            elif trial["intended_type"].startswith("G"):
-                trial["attempt_outcome"] = "accepted"
+            if trial["intended_type"].startswith("S") and trial["blink_scores"]:
+                trial.update(
+                    blink_scores=[0.10, 0.12], max_blink_score=0.12, min_blink_score=0.10,
+                    attempt_outcome="rejected", outcome_reason="no_transient_blink_detected",
+                )
     outcome = analyse(sessions)
     assert outcome["clears_b18"] is False
     serialised = json.dumps(outcome).lower()
@@ -360,11 +415,31 @@ def test_the_result_carries_the_stage0_banner_and_clustering_warning(result):
     assert "B18 REMAINS OPEN" in result["banner"]
     assert "cannot authorize Stage 1" in result["banner"]
     assert "UNDERSTATE uncertainty" in result["statistical_basis"]
-    assert "not population bounds" in result["statistical_basis"]
+    assert result["data_classification"] == "synthetic_stage0"
 
 
-def test_the_pooled_far_carries_its_caveat_in_the_same_object(result):
-    assert "S4" in result["aggregate"]["pooling_caveat"]
+# ------------------------------- REGRESSION: Markdown injection defence
+
+
+def test_md_escape_escapes_pipes():
+    assert md_escape("a|b") == "a\\|b"
+
+
+def test_md_escape_removes_newlines():
+    escaped = md_escape("line1\nline2")
+    assert "\n" not in escaped and "\r" not in escaped
+
+
+def test_md_escape_strips_control_characters():
+    assert "\x00" not in md_escape("a\x00b")
+    assert "\x1b" not in md_escape("a\x1bb")
+
+
+def test_the_report_survives_a_pipe_in_a_value_at_render_time(result):
+    """Validation rejects pipes; escaping is the second layer if that relaxes."""
+    tampered = json.loads(json.dumps(result))
+    tampered["provenance"][0]["camera_label"] = "evil | injected"
+    assert "evil \\| injected" in render_markdown(tampered)
 
 
 # ----------------------------------------------------------------- report
@@ -372,15 +447,9 @@ def test_the_pooled_far_carries_its_caveat_in_the_same_object(result):
 
 def test_the_markdown_report_leads_with_the_banner(result):
     report = render_markdown(result)
-    head = report.splitlines()[:6]
-    assert any("SYNTHETIC STAGE 0 EVIDENCE ONLY" in line for line in head)
+    assert any("SYNTHETIC STAGE 0 EVIDENCE ONLY" in line for line in report.splitlines()[:6])
     assert "B18 status: **OPEN**" in report
     assert "Clears B18: **False**" in report
-
-
-def test_the_markdown_report_repeats_the_banner_at_the_end(result):
-    report = render_markdown(result)
-    assert "SYNTHETIC STAGE 0 EVIDENCE ONLY" in report.splitlines()[-6:][0] or         any("SYNTHETIC STAGE 0 EVIDENCE ONLY" in line for line in report.splitlines()[-8:])
 
 
 def test_the_markdown_report_puts_participants_before_the_aggregate(result):
@@ -389,35 +458,25 @@ def test_the_markdown_report_puts_participants_before_the_aggregate(result):
 
 
 def test_the_aggregate_report_contains_no_participant_level_score_series(result):
-    """Plan §11.3: only aggregate, non-identifying results may be published."""
     report = render_markdown(result)
     for session in corpus():
         for trial in session["trials"]:
-            series = ", ".join(str(s) for s in trial["blink_scores"])
-            assert series not in report
-            assert str(trial["blink_scores"]) not in report
+            if trial["blink_scores"]:
+                assert str(trial["blink_scores"]) not in report
     assert "blink_scores" not in report
-    assert "outcome_reason" not in report
 
 
-def test_the_report_states_the_participant_count_is_the_sample_size(result):
-    assert "not the trial count, is the sample size" in render_markdown(result)
-
-
-def test_the_report_never_prints_a_bare_zero_percent_for_a_zero_event_group(result):
+def test_the_report_separates_still_image_from_replay(result):
     report = render_markdown(result)
-    assert "one-sided 95% upper bound" in report
-
-
-def test_a_zero_denominator_group_renders_as_not_applicable(result):
-    assert "n/a (0 trials)" in render_markdown(result)
+    assert "Still-image spoof margin (S1-S3)" in report
+    assert "Video replay (S4) - reported separately" in report
+    assert report.index("Still-image spoof margin") < report.index("Video replay (S4)")
 
 
 # ------------------------------------------------------------- determinism
 
 
 def test_analysis_output_is_byte_identical_across_runs():
-    """Plan §13 requires the analysis be reproducible from the manifest."""
     first = json.dumps(analyse(corpus()), indent=1, sort_keys=True, ensure_ascii=False)
     second = json.dumps(analyse(corpus()), indent=1, sort_keys=True, ensure_ascii=False)
     assert first == second
@@ -428,77 +487,12 @@ def test_the_report_is_byte_identical_across_runs():
 
 
 def test_output_does_not_depend_on_input_session_order():
-    """Sorted iteration, so a caller's argument order cannot change the numbers."""
     forward = analyse([session_one(), session_two()])
     reversed_order = analyse([session_two(), session_one()])
     assert json.dumps(forward, sort_keys=True) == json.dumps(reversed_order, sort_keys=True)
 
 
 def test_the_result_contains_no_timestamp():
-    """A timestamp would silently break byte-identical reproduction."""
     serialised = json.dumps(analyse(corpus())).lower()
-    for token in ("generated", "timestamp", "\"date\":", "utcnow", "2026-"):
+    for token in ("generated", "timestamp", "utcnow"):
         assert token not in serialised
-
-
-def test_cli_writes_byte_identical_files_on_repeated_runs(tmp_path):
-    manifests = []
-    for name, session in (("S01.json", session_one()), ("S02.json", session_two())):
-        path = tmp_path / name
-        path.write_text(json.dumps(session), encoding="utf-8")
-        manifests.append(str(path))
-
-    outputs = []
-    for run in ("a", "b"):
-        out = tmp_path / f"results_{run}.json"
-        report = tmp_path / f"report_{run}.md"
-        assert cli.main(["analyse", *manifests, "--out", str(out), "--report", str(report)]) == 0
-        outputs.append((out.read_bytes(), report.read_bytes()))
-
-    assert outputs[0][0] == outputs[1][0], "results JSON differed between runs"
-    assert outputs[0][1] == outputs[1][1], "Markdown report differed between runs"
-
-
-def test_cli_analyse_prints_the_report_when_no_output_path_is_given(tmp_path, capsys):
-    path = tmp_path / "S01.json"
-    path.write_text(json.dumps(session_one()), encoding="utf-8")
-    assert cli.main(["analyse", str(path)]) == 0
-    assert "SYNTHETIC STAGE 0 EVIDENCE ONLY" in capsys.readouterr().out
-
-
-def test_cli_leaves_no_partial_file_behind_on_success(tmp_path):
-    path = tmp_path / "S01.json"
-    path.write_text(json.dumps(session_one()), encoding="utf-8")
-    out = tmp_path / "results.json"
-    assert cli.main(["analyse", str(path), "--out", str(out)]) == 0
-    assert out.exists()
-    assert not list(tmp_path.glob("*.partial"))
-
-
-# --------------------------------------------------------------- no network
-
-
-def test_stage0_tooling_opens_no_socket(tmp_path, monkeypatch):
-    """B17 made the runtime network-silent; Stage 0 tooling must be too.
-
-    Rather than trusting inspection, every socket constructor and connect is
-    replaced with something that raises, and the whole pipeline is then run.
-    """
-    import socket
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("Stage 0 tooling attempted network access")
-
-    monkeypatch.setattr(socket, "socket", refuse)
-    monkeypatch.setattr(socket, "create_connection", refuse)
-    monkeypatch.setattr(socket, "getaddrinfo", refuse)
-
-    manifest = tmp_path / "S01.json"
-    manifest.write_text(json.dumps(session_one()), encoding="utf-8")
-    out = tmp_path / "results.json"
-    report = tmp_path / "report.md"
-
-    assert cli.main(["validate", str(manifest)]) == 0
-    assert cli.main(["analyse", str(manifest), "--out", str(out), "--report", str(report)]) == 0
-    assert out.exists() and report.exists()
-

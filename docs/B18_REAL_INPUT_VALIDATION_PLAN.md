@@ -176,24 +176,50 @@ The validator and analyser exist in `scripts/b18_stage0/`:
 
 ```
 python -m scripts.b18_stage0.cli validate MANIFEST [MANIFEST ...]
-python -m scripts.b18_stage0.cli analyse  MANIFEST [MANIFEST ...]     [--out results.json] [--report report.md]
+python -m scripts.b18_stage0.cli analyse  MANIFEST [MANIFEST ...] [--workspace DIR]
 ```
 
 | Exit | Meaning |
 |---|---|
-| 0 | every manifest valid; analysis completed |
-| 1 | at least one manifest failed validation — findings printed, one per line, each naming the failing JSON path |
-| 2 | the command could not run: missing/unreadable file, unparseable JSON, refused output path, write failure |
+| 0 | every manifest valid; for `analyse`, the run was published |
+| 1 | the manifests were read but are not acceptable — schema findings, or a corpus that cannot legitimately be aggregated |
+| 2 | the command could not run: missing/unreadable file, invalid UTF-8, duplicate JSON keys, unparseable JSON, or a workspace that failed capability verification |
 
-`validate` enforces `docs/b18/forms/TRIAL_MANIFEST_SCHEMA.md` and **fails
-closed**: a manifest that cannot be fully validated is rejected whole, never
-analysed in part, and no trial is silently dropped. `analyse` recomputes every
-derived quantity rather than trusting the manifest's own summaries.
+**Synthetic-only.** Every manifest must declare
+`"data_classification": "synthetic_stage0"`. Anything else is refused, so this
+tooling cannot consume a real participant manifest and emit a report describing
+the data as synthetic. Handling Stage 1 or Stage 2 manifests requires a
+**separate, owner-authorized, reviewed change** — not a flag on this one.
+
+`validate` enforces `docs/b18/forms/TRIAL_MANIFEST_SCHEMA.md` as a **whitelist**
+— an unknown field anywhere is a hard failure — and **fails closed**: a manifest
+that cannot be fully validated is rejected whole, never analysed in part, and no
+trial is silently dropped. It recomputes every derived quantity, including the
+attempt outcome and its reason, from the observation series and the shipping
+decision rule; a recorded outcome that contradicts the recomputation is rejected.
+
+`analyse` additionally enforces **cross-session comparability** before computing
+anything: duplicate inputs or session IDs, conflicting thresholds or liveness
+configuration, and differing code commits, model digests or dependency sets all
+stop the analysis rather than producing a note beside a wrong aggregate.
 
 Its output is **deterministic** — identical input yields byte-identical JSON and
 Markdown, with no timestamp anywhere — so that a reproduction check (§13) is
-meaningful. `scripts/b18_stage0/cleanup.py` rehearses the workspace-deletion
-step with guard rails, and makes no secure-erasure claim (§12.3).
+meaningful.
+
+**Output safety.** There is no arbitrary `--out`/`--report`. Results are
+published into a fresh `run-NNNN` directory inside a workspace the tool created
+beneath the system temporary directory, under fixed filenames, staged first and
+published by one atomic rename. A run therefore cannot overwrite a source file,
+a user file, or a previous run, and a failure cannot leave a half-written
+artefact that looks like a completed result.
+
+`scripts/b18_stage0/cleanup.py` rehearses workspace deletion. Deletion is
+**capability-based**: the only removable thing is a directory this tool created,
+carrying the marker and token it wrote. A caller cannot declare an arbitrary
+directory a workspace, so home, `Documents`, `AppData`, the repository and
+everything outside a real workspace are refused. It makes no secure-erasure
+claim (§12.3).
 
 **The tooling has been exercised only against invented manifests in
 `scripts/b18_stage0/synthetic.py`.** There is no real-input evidence, no

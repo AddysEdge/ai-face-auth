@@ -31,11 +31,24 @@ templates/
 # none of it may ever be committed (docs/B18_REAL_INPUT_VALIDATION_PLAN.md 11.3).
 # Only a verified aggregate, non-identifying report may be committed, and only
 # under owner decision D16 - so that is deliberately NOT excepted here.
+#
+# Filenames are a weak guard on their own: `git add -f notes.txt` defeats any
+# pattern. CI additionally scans tracked file CONTENT for the participant +
+# session + blink-score combination - see the repo-hygiene job.
 b18_data/
 b18_workspace/
+b18_stage0_*/
 *.manifest.json
+*manifest*.json
+*participant*.json
+*session*.json
+# Every session-ID length the schema allows (P/S ## .. ####).
 S[0-9][0-9].json
 S[0-9][0-9][0-9].json
+S[0-9][0-9][0-9][0-9].json
+P[0-9][0-9].json
+P[0-9][0-9][0-9].json
+P[0-9][0-9][0-9][0-9].json
 enrollment/
 *.embedding
 *.npy

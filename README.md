@@ -59,15 +59,15 @@ the answer, not a stepping stone to one.
 
 **Every entry criterion in
 [`docs/PHASE2_ACCEPTANCE_CRITERIA.md`](docs/PHASE2_ACCEPTANCE_CRITERIA.md)
-Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, **B16**, and
-**B17** - **and** the repository owner must record explicit written approval.
-The identifiers are not a contiguous range, so "B1-B15" would silently omit
-three of them. Refer to the gate as *"every Part B entry criterion, including
-B4a, B16, and B17"*.
+Part B must pass** - B1, B2, B3, B4, **B4a**, B5-B14, B15, **B16**, **B17**,
+and **B18** - **and** the repository owner must record explicit written
+approval. The identifiers are not a contiguous range, so "B1-B15" would
+silently omit four of them. Refer to the gate as *"every Part B entry
+criterion, including B4a, B16, B17, and B18"*.
 
-Four of those are the most architecture-critical, in the sense that failing any
+Five of those are the most architecture-critical, in the sense that failing any
 one of them would invalidate the design rather than merely delay it. One of the
-four, B17, is now cleared:
+five, B17, is now cleared:
 
 - **B1** - whether a third-party Session 0 service can open a camera before
   interactive logon. If this cannot be cleared using documented APIs, the
@@ -86,7 +86,17 @@ four, B17, is now cleared:
   the observed result is zero external endpoints over 20 runs - see
   [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) and
   [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).
-  The remaining three below are still open.
+  It covers network silence only - not whether the replacement still detects
+  liveness as well as what it replaced, which is B18.
+- **B18** - the liveness replacement must be validated against **real input**.
+  Phase 2.5 swapped the runtime that computes the liveness inputs, and showed
+  it agrees with the old one on a synthetic corpus. That is not evidence the
+  control still works: synthetic agreement says nothing about false-accept and
+  false-reject rates or spoof resistance, and the corpus provably cannot reach
+  the configured `blink_score_high` of 0.40 - MediaPipe itself only reaches
+  about 0.21 on drawn faces. **OPEN**, and not satisfiable by more synthetic
+  measurement.
+  The other three above are still open too.
 
 **The rest are not optional.** They include the AD + PKI lab (**B4**),
 verification against a Full Enforcement domain controller (**B4a**), the
@@ -126,7 +136,9 @@ compatibility rollback key has been unsupported since 9 September 2025.
   than erased. `python scripts/check_network_activity.py` re-checks this and
   fails on **any** destination, since nothing is allowlisted. It is a detector,
   not a proof of absence: it reads **IP and port**, never payload bytes, and a
-  connection shorter than its poll interval could be missed.
+  connection shorter than its poll interval could be missed. Network silence is
+  all this establishes - whether the replacement still *detects liveness* as
+  well as what it replaced is a separate, open question (**B18**).
 - Rate-limits repeated failures with escalating cooldown, persisted to disk
   so it survives across separate CLI invocations, not just within one
   running process (see `docs/THREAT_MODEL.md` §12 for why this matters -

@@ -36,6 +36,42 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      # B17 is a property of the dependency set, so prove the telemetry-bearing
+      # runtime is not installed here BEFORE anything else runs. The
+      # oracle-equivalence job below deliberately installs mediapipe; that is a
+      # different environment and is not evidence about network silence. If the
+      # two ever converge, this step fails rather than letting a mediapipe-
+      # bearing environment produce a network-silence result.
+      - name: Assert mediapipe is absent from the shipping environment
+        shell: python
+        run: |
+          import importlib.util as util, pathlib, sys, tomllib
+
+          assert util.find_spec("mediapipe") is None, (
+              "mediapipe is installed in the shipping/network-test environment; "
+              "B17 evidence from this job would be meaningless"
+          )
+          assert util.find_spec("ai_edge_litert") is not None, "ai-edge-litert is required"
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          declared = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["dev"]
+          offenders = [d for d in declared if d.lower().startswith("mediapipe")]
+          assert not offenders, f"mediapipe is a declared dependency: {offenders}"
+
+          roots = [pathlib.Path("src"), pathlib.Path("scripts")]
+          bad = []
+          for root in roots:
+              for path in root.rglob("*.py"):
+                  # compare.py loads the oracle on purpose and is not shipped.
+                  if path.as_posix().endswith("scripts/b17_option_a/compare.py"):
+                      continue
+                  for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                      stripped = line.strip()
+                      if stripped.startswith(("import mediapipe", "from mediapipe")):
+                          bad.append(f"{path}:{number}")
+          assert not bad, f"runtime import of mediapipe: {bad}"
+          print("mediapipe absent: not installed, not declared, not imported")
+
       # Model weights are not committed (see .gitignore and
       # src/faceauth/model_registry.py), so they are fetched from their pinned,
       # checksum-verified sources. This runs before pytest deliberately: the
@@ -274,3 +310,104 @@ jobs:
         run: |
           python -m pip install --upgrade pip pip-audit
           python -m pip_audit --progress-spinner off -r audit-requirements.txt
+
+  # ---------------------------------------------------------------------------
+  # Oracle equivalence.
+  #
+  # This job installs `mediapipe==1.0.1` ON PURPOSE, as the reference oracle to
+  # compare against. That makes this environment the OPPOSITE of the shipping
+  # one: it is NOT network-silent, and it is not evidence about B17. The
+  # network-silence evidence comes from the `python` job above, where mediapipe
+  # is absent from the dependency set entirely. The two must never be merged.
+  #
+  # What this job is for: proving the LiteRT reimplementation still agrees with
+  # the runtime it replaced, to the tolerances declared in
+  # scripts/b17_option_a/compare.py. Those tolerances are enforced by the
+  # command's exit status, so a regression fails the build rather than being
+  # printed and ignored.
+  oracle-equivalence:
+    name: Oracle equivalence (mediapipe oracle - NOT the shipping environment)
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the project with its normal pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Installed only here, only as the oracle. Pinned to the exact version
+      # whose behaviour this reimplementation was measured against.
+      - name: Install the mediapipe oracle
+        run: python -m pip install "mediapipe==1.0.1"
+
+      - name: Confirm both runtimes are present in THIS job only
+        shell: python
+        run: |
+          import importlib.util as util
+          for name in ("mediapipe", "ai_edge_litert"):
+              assert util.find_spec(name), f"{name} is required for the oracle comparison"
+          print("oracle environment ready: mediapipe + ai-edge-litert")
+
+      # The comparison refuses to run without the pinned bundle rather than
+      # skipping, and fetch_models.py verifies each file's SHA-256 against
+      # src/faceauth/model_registry.py before accepting it.
+      - name: Fetch and SHA-verify the pinned model bundle
+        run: python scripts/fetch_models.py
+
+      - name: Run the enforcing oracle comparison
+        run: >
+          python -m scripts.b17_option_a.compare
+          --out oracle-equivalence-results.json
+
+      # The command's exit status already enforces the tolerances. This asserts
+      # the run was complete as well as passing: a comparison that measured
+      # fewer cases than the corpus defines would otherwise pass quietly.
+      - name: Assert every expected case and metric was measured
+        shell: python
+        run: |
+          import json, sys
+          sys.path.insert(0, ".")
+          from scripts.b17_option_a.compare import REQUIRED_FACE_METRICS, TOLERANCES
+          from scripts.b17_option_a.corpus import build_corpus
+
+          report = json.load(open("oracle-equivalence-results.json", encoding="utf-8"))
+          expected = [name for name, _ in build_corpus()]
+
+          assert report["passed"] is True, report["failures"]
+          assert report["failures"] == [], report["failures"]
+          assert report["expected_cases"] == expected, "corpus drifted from the report"
+          assert report["cases"] == len(expected), report["cases"]
+          assert report["detection_agreement"] == report["cases"]
+          assert report["presence_agreement"] == report["presence_relevant_cases"]
+          assert report["tolerances"] == TOLERANCES, "tolerances differ from the module"
+
+          measured = [r for r in report["results"]
+                      if r["oracle_detected"] and r["replica_detected"]]
+          assert measured, "no case produced a face; the comparison measured nothing"
+          for row in measured:
+              for metric in REQUIRED_FACE_METRICS:
+                  assert metric in row, f"{row['case']} is missing {metric}"
+
+          gate = [r for r in report["results"] if r["case"] == "presence_gate_reject"]
+          assert gate, "the presence-gate case is missing from the corpus"
+          assert gate[0]["replica_detector_fired"] is True, "gate case no longer detector-positive"
+          assert gate[0]["replica_detected"] is False, "the presence gate stopped rejecting"
+          assert gate[0]["oracle_detected"] is False, "the oracle no longer rejects the gate case"
+
+          print(f"{len(measured)} measured cases, {report['cases']} total, all tolerances enforced")
+
+      - name: Upload the comparison result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-equivalence-results
+          path: oracle-equivalence-results.json
+          if-no-files-found: error

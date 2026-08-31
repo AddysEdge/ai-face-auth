@@ -18,6 +18,7 @@ import numpy as np
 
 BACKGROUND = 220
 SEED = 20260827
+GATE_SEED = 11
 
 # The liveness contract's landmark indices (MediaPipe FaceMesh topology).
 NOSE_TIP_IDX = 1
@@ -116,6 +117,17 @@ def build_corpus() -> list[tuple[str, np.ndarray]]:
     cases.append(("noface_flat", np.full((480, 480, 3), 200, np.uint8)))
     rng = np.random.default_rng(SEED)
     cases.append(("noface_noise", rng.integers(0, 256, (480, 480, 3), dtype=np.uint8)))
+
+    # Detector-positive, presence-negative: the face detector fires on this
+    # (score 0.63) but the landmark model's face-presence logit comes back at
+    # about -15, so MediaPipe rejects it and returns no face. Without the
+    # presence gate a replica accepts it and invents landmarks and blendshapes
+    # for a blank oval. This case exists to keep that gate honest - it is the
+    # only case in the corpus where the two stages disagree.
+    gate_rng = np.random.default_rng(GATE_SEED)
+    gate = gate_rng.integers(150, 230, (480, 480, 3)).astype(np.uint8)
+    cv2.ellipse(gate, (240, 240), (110, 150), 0, 0, 360, (200, 175, 155), -1)
+    cases.append(("presence_gate_reject", gate))
 
     cases.append(make_case("twofaces", width=640, height=480,
                            faces=((-140, 0, 0.7, 0.25, 0.0), (140, 0, 0.7, 1.0, 0.0))))

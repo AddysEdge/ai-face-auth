@@ -47,6 +47,36 @@ _DETECTOR_SIZE = 128
 _LANDMARKS_SIZE = 256
 _NUM_LANDMARKS = 478
 
+# face_landmarks_detector_graph.cc splits the landmark model's output tensor
+# vector in two: kFaceLandmarksOutputTensorsNum = 2, and
+# ConfigureSplitTensorVectorCalculator takes range [0, N-1) as the landmarks and
+# [N-1, N) as the face-presence flag. So presence is the tensor at *declared
+# output index 1*, and MediaPipe's own selection is positional.
+#
+# Position alone would be a fragile thing to rely on, but shape alone cannot
+# replace it here: the shipped model has three outputs, two of which are
+# float32 scalars.
+#
+#   index 0  Identity    (1,1,1,1434)  478*3 landmarks
+#   index 1  Identity_1  (1,1,1,1)     face-presence logit
+#   index 2  Identity_2  (1,1)         not consumed by the graph
+#
+# Measured directly against the model, Identity_1 reads +10.28 on a synthetic
+# face and -12.6 to -14.1 on noise, flat black and flat white, while Identity_2
+# barely moves (0.50-0.73 after sigmoid). So the two are not interchangeable and
+# shape cannot tell them apart. The resolution used here is to take MediaPipe's
+# positions and *validate* the shape and dtype found at each one, refusing to
+# run at all if the layout is not what this code was written against.
+_LANDMARK_OUTPUT_INDEX = 0
+_PRESENCE_OUTPUT_INDEX = 1
+_LANDMARK_TENSOR_SIZE = _NUM_LANDMARKS * 3
+
+# face_landmarks_detector_graph_options.proto: min_detection_confidence
+# defaults to 0.5, and thresholding_calculator.cc computes
+#   accept = static_cast<double>(value) > threshold_
+# so the comparison is STRICTLY greater. A score of exactly 0.5 is a reject.
+_PRESENCE_THRESHOLD = 0.5
+
 # image_preprocessing_graph.cc derives these from the model's
 # NormalizationOptions as min=(0-mean)/std, max=(255-mean)/std. Neither .tflite
 # carries those options, so the pair was identified by measuring the two
@@ -185,6 +215,56 @@ class LiteRtFaceLandmarker:
             ) from exc
 
         self._anchors = generate_ssd_anchors()
+        self._landmark_output, self._presence_output = self._resolve_landmark_outputs(
+            self._landmarks.get_output_details()
+        )
+
+    # -------------------------------------------------------------- outputs
+    @staticmethod
+    def _resolve_landmark_outputs(details: list[dict]) -> tuple[dict, dict]:
+        """Validate the landmark model's output layout once, at load time.
+
+        Fails closed: if the model does not present exactly the layout this
+        code was written against, it is rejected here rather than being
+        half-interpreted during authentication.
+        """
+        if len(details) < _PRESENCE_OUTPUT_INDEX + 1:
+            raise ModelInitializationError(
+                f"Landmark model exposes {len(details)} output(s); "
+                f"at least {_PRESENCE_OUTPUT_INDEX + 1} are required"
+            )
+
+        def size_of(detail: dict) -> int:
+            return int(np.prod(detail["shape"]))
+
+        landmark_like = [d for d in details if size_of(d) == _LANDMARK_TENSOR_SIZE]
+        if len(landmark_like) != 1:
+            raise ModelInitializationError(
+                f"Expected exactly one output of {_LANDMARK_TENSOR_SIZE} values "
+                f"(478 landmarks x 3), found {len(landmark_like)}"
+            )
+
+        landmark = details[_LANDMARK_OUTPUT_INDEX]
+        presence = details[_PRESENCE_OUTPUT_INDEX]
+
+        if landmark is not landmark_like[0]:
+            raise ModelInitializationError(
+                "The landmark tensor is not at the declared output index "
+                f"{_LANDMARK_OUTPUT_INDEX} that the published graph splits on"
+            )
+        for detail, expected_size, role in (
+            (landmark, _LANDMARK_TENSOR_SIZE, "landmark"),
+            (presence, 1, "face-presence"),
+        ):
+            if detail["dtype"] != np.float32:
+                raise ModelInitializationError(
+                    f"The {role} output has dtype {detail['dtype'].__name__}, expected float32"
+                )
+            if size_of(detail) != expected_size:
+                raise ModelInitializationError(
+                    f"The {role} output has {size_of(detail)} values, expected {expected_size}"
+                )
+        return landmark, presence
 
     # ------------------------------------------------------------------ util
     @staticmethod
@@ -193,6 +273,18 @@ class LiteRtFaceLandmarker:
         interpreter.set_tensor(detail["index"], tensor)
         interpreter.invoke()
         return [interpreter.get_tensor(o["index"]) for o in interpreter.get_output_details()]
+
+    @staticmethod
+    def _sigmoid(value: float) -> float:
+        """Numerically stable logistic, matching TensorsToFloatsCalculator SIGMOID.
+
+        Split by sign so neither branch ever exponentiates a large positive
+        number: exp overflows well before the logit range the model can emit.
+        """
+        if value >= 0.0:
+            return float(1.0 / (1.0 + math.exp(-value)))
+        exp_value = math.exp(value)
+        return float(exp_value / (1.0 + exp_value))
 
     # ---------------------------------------------------------------- detect
     def _detect(self, image_rgb: np.ndarray) -> list[dict] | None:
@@ -313,7 +405,18 @@ class LiteRtFaceLandmarker:
         return transform_normalized_rect(rect, _ROI_SCALE, _ROI_SCALE)
 
     # ------------------------------------------------------------- landmarks
-    def _landmarks_for(self, image_rgb: np.ndarray, rect: NormRect) -> np.ndarray:
+    def _landmarks_for(
+        self, image_rgb: np.ndarray, rect: NormRect
+    ) -> tuple[np.ndarray, float] | None:
+        """Landmarks and presence score, or None when the presence gate rejects.
+
+        The gate is not optional. The published graph runs the presence logit
+        through a sigmoid and a threshold, and puts *both* the projected
+        landmarks and the blendshapes behind that flag with AllowIf. Accepting
+        landmarks because the detector fired - which is what this did before -
+        makes the second stage unable to reject anything the first stage let
+        through.
+        """
         height, width = image_rgb.shape[:2]
         roi = get_roi(width, height, rect)
         pad_roi(_LANDMARKS_SIZE, _LANDMARKS_SIZE, False, roi)
@@ -322,15 +425,44 @@ class LiteRtFaceLandmarker:
             _LANDMARKS_RANGE[0], _LANDMARKS_RANGE[1], BORDER_REPLICATE,
         )
 
-        outputs = self._invoke(self._landmarks, tensor[None, ...])
-        landmark_outputs = [o for o in outputs if o.size >= _NUM_LANDMARKS * 3]
-        if not landmark_outputs:
-            raise ModelInferenceError("Landmark model produced no landmark tensor")
+        self._landmarks.set_tensor(
+            self._landmarks.get_input_details()[0]["index"], tensor[None, ...]
+        )
+        self._landmarks.invoke()
+        raw_landmarks = self._landmarks.get_tensor(self._landmark_output["index"])
+        raw_presence = self._landmarks.get_tensor(self._presence_output["index"])
 
-        raw = landmark_outputs[0].reshape(-1, 3)[:_NUM_LANDMARKS]
+        # Re-check at inference time. The load-time check proves the declared
+        # layout; this proves what actually came back.
+        if raw_landmarks.size != _LANDMARK_TENSOR_SIZE:
+            raise ModelInferenceError(
+                f"Landmark tensor has {raw_landmarks.size} values, "
+                f"expected {_LANDMARK_TENSOR_SIZE}"
+            )
+        if raw_presence.size != 1:
+            raise ModelInferenceError(
+                f"Face-presence tensor has {raw_presence.size} values, expected 1"
+            )
+
+        presence_logit = float(raw_presence.reshape(-1)[0])
+        if not math.isfinite(presence_logit):
+            # Never let this reach the sigmoid: +inf would sigmoid to 1.0 and
+            # sail through the threshold, turning a broken model into an accept.
+            raise ModelInferenceError(
+                f"Face-presence logit is not finite ({presence_logit})"
+            )
+
+        presence_score = self._sigmoid(presence_logit)
+        if presence_score <= _PRESENCE_THRESHOLD:
+            return None
+
+        raw = raw_landmarks.reshape(-1, 3)[:_NUM_LANDMARKS]
+        if not np.isfinite(raw[:, :2]).all():
+            raise ModelInferenceError("Landmark tensor contains non-finite coordinates")
+
         # Model emits crop-pixel coordinates in 0..256, not normalized values.
         normalized = (raw[:, :2] / _LANDMARKS_SIZE).astype(np.float32)
-        return project_landmarks(normalized, rect)
+        return project_landmarks(normalized, rect), presence_score
 
     # ------------------------------------------------------------ blendshape
     def _blendshapes_for(
@@ -345,9 +477,12 @@ class LiteRtFaceLandmarker:
     def detect(self, image_rgb: np.ndarray) -> dict | None:
         """Run the full pipeline on one RGB frame.
 
-        Returns ``None`` when no face is detected, otherwise a dict with
-        ``landmarks`` (478x2, image-normalized) and ``blendshapes``
-        (name -> score).
+        Returns ``None`` when no face is detected *or* when the landmark
+        model's face-presence gate rejects the crop the detector proposed.
+        Otherwise a dict with ``landmarks`` (478x2, image-normalized),
+        ``blendshapes`` (name -> score), the detector ``score``, and the
+        ``presence_score`` that passed the gate. All four are scalars or
+        derived coordinates - no image data is carried out.
         """
         detections = self._detect(image_rgb)
         if not detections:
@@ -355,9 +490,18 @@ class LiteRtFaceLandmarker:
 
         height, width = image_rgb.shape[:2]
         rect = self._detection_to_rect(detections[0], width, height)
-        landmarks = self._landmarks_for(image_rgb, rect)
+        gated = self._landmarks_for(image_rgb, rect)
+        if gated is None:
+            # Presence gate rejected. The blendshape model is deliberately not
+            # invoked: the published graph gates it behind the same flag, and
+            # scoring a crop the landmark stage disowned would be inventing a
+            # signal the reference pipeline never produces.
+            return None
+
+        landmarks, presence_score = gated
         return {
             "landmarks": landmarks,
             "blendshapes": self._blendshapes_for(landmarks, width, height),
             "score": detections[0]["score"],
+            "presence_score": presence_score,
         }

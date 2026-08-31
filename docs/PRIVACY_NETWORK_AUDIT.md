@@ -323,7 +323,7 @@ The replacement wording used throughout is deliberately uniform:
 | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` | New Phase 3 entry criterion **B17**, and the identifier list updated to include it |
 | `docs/PHASE2_SECURITY_REVIEW.md` section 3.4 | The "no network access" requirement is restated as unchanged **and** flagged as a blocker the current dependency set cannot meet |
 | `docs/adr/0002-...md` section 5.3 | The "Network: None. Deny all outbound." row now points at B17 |
-| `README.md`, `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `docs/ACCEPTANCE_AUDIT.md` | Every current-facing Phase 3 gate reference now reads *"every Part B entry criterion, including B4a, B16, and B17"*. Statements that `B1-B15` omits "two" criteria corrected to three. Explicitly historical Phase 2 records were left as they are. |
+| `README.md`, `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `docs/ACCEPTANCE_AUDIT.md` | Every current-facing Phase 3 gate reference now reads *"every Part B entry criterion, including B4a, B16, and B17"*. Statements that `B1-B15` omits "two" criteria corrected to three. Explicitly historical Phase 2 records were left as they are. **Superseded 2026-08-31:** B18 was added, so the current shorthand is *"including B4a, B16, B17, and B18"* and `B1-B15` now omits four. |
 
 ### 3.4 What was deliberately left alone
 
@@ -660,9 +660,11 @@ historical.** Option A was implemented. An earlier revision called it
 replica it rested on did not implement MediaPipe's published CPU preprocessing
 path. With that path implemented, and with the blendshape model's landmarks
 denormalized by image size as the published graph does, the replica agrees with
-the 1.0.1 oracle to 0.0136 on the blink score, 0.0019 on landmarks and 0.0030 on
-the head-turn ratio across 45 synthetic cases, with detection agreeing on all
-45. The `mediapipe` dependency is removed, the allowlist is empty, and 20
+the 1.0.1 oracle within every declared limit across 46 synthetic cases -
+landmark 0.92339 px against a 1.0 px limit, blink 0.01363 against 0.02,
+head-turn ratio 0.00298 against 0.0045, each of the 52 blendshapes 0.02779
+against 0.05 - with detection agreeing on all 46 and the face-presence gate
+agreeing on all 44 cases where the detector fired. The `mediapipe` dependency is removed, the allowlist is empty, and 20
 fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
 **zero** external endpoints, each with the observer canary proven and no failed
 OS query (`docs/b17/network_silence_20_runs.json`). **B17 is cleared.** Option B

@@ -1,9 +1,15 @@
 {
  "what": "20 fresh-process FULL-mode runs of scripts/check_network_activity.py with an empty scripts/network_allowlist.json",
  "why": "acceptance criterion B17: the verification path must make no outbound network connections",
- "probe": "the real liveness provider (new_challenge/observe/finalize plus teardown) driven with a procedurally drawn synthetic face, so the detector, landmark and blendshape models all run inference rather than merely loading",
- "generated": "2026-08-31T00:53:04+00:00",
- "commit": "2424643f53439af4c4ba83cf049f2c21318a662e",
+ "probe": "the real liveness provider (new_challenge/observe/finalize plus teardown) driven with a procedurally drawn synthetic face. Each run reports the inference stages it completed; all four are required, so a run that short-circuited before the later models cannot pass.",
+ "stages_required_per_run": [
+  "detector",
+  "presence_gate",
+  "landmarks",
+  "blendshapes"
+ ],
+ "generated": "2026-08-31T05:21:28+00:00",
+ "commit": "584a4f0be9d3ce7b952b45258c6d798a0e728589",
  "platform": "Windows 11 (AMD64)",
  "python": "3.12.13",
  "environment": "clean venv built from the pinned dependency set; mediapipe absent from site-packages entirely, ai-edge-litert==2.2.0 present",
@@ -15,24 +21,31 @@
   "zero failed OS queries",
   "probe not cut short",
   "command deadline not expired",
+  "detector inference executed",
+  "landmark inference executed",
+  "face-presence gate passed",
+  "blendshape inference executed",
+  "teardown executed",
   "zero external endpoints observed",
   "zero undeclared destinations"
  ],
  "runs": 20,
  "runs_meeting_every_criterion": 20,
+ "runs_completing_all_stages": 20,
  "total_external_endpoints_across_all_runs": 0,
  "successful_polls_range": [
-  8,
-  10
+  5,
+  6
  ],
  "seconds_per_run_range": [
-  11.2,
+  10.8,
   13.1
  ],
  "limitations": [
   "This is a detector, not a proof of absence: a connection shorter than the poll interval could be missed. The canary proves the observer was working, not that nothing could ever escape it.",
   "It observes IP:port, never payload bytes.",
-  "It covers the liveness path the probe exercises, on this OS and this dependency set."
+  "It covers the liveness path the probe exercises, on this OS and this dependency set.",
+  "It says nothing about detection quality. Whether the replacement still detects liveness as well as the runtime it replaced is criterion B18, which is OPEN."
  ],
  "results": [
   {
@@ -40,14 +53,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 12.1,
    "ok": true
   },
   {
@@ -55,14 +74,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 11.2,
+   "seconds": 12.6,
    "ok": true
   },
   {
@@ -70,14 +95,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 5,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 11.6,
+   "seconds": 10.8,
    "ok": true
   },
   {
@@ -85,14 +116,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.8,
+   "seconds": 12.3,
    "ok": true
   },
   {
@@ -100,11 +137,17 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
    "seconds": 12.4,
@@ -115,14 +158,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.3,
+   "seconds": 12.0,
    "ok": true
   },
   {
@@ -130,14 +179,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 11.4,
+   "seconds": 12.8,
    "ok": true
   },
   {
@@ -145,14 +200,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 11.8,
+   "seconds": 12.5,
    "ok": true
   },
   {
@@ -160,14 +221,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 13.1,
+   "seconds": 11.8,
    "ok": true
   },
   {
@@ -175,14 +242,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 12.5,
    "ok": true
   },
   {
@@ -190,14 +263,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.3,
+   "seconds": 12.4,
    "ok": true
   },
   {
@@ -205,14 +284,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 13.0,
    "ok": true
   },
   {
@@ -220,14 +305,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.1,
+   "seconds": 13.1,
    "ok": true
   },
   {
@@ -235,14 +326,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 5,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 11.2,
+   "seconds": 11.1,
    "ok": true
   },
   {
@@ -250,14 +347,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.3,
+   "seconds": 12.7,
    "ok": true
   },
   {
@@ -265,14 +368,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.3,
+   "seconds": 12.8,
    "ok": true
   },
   {
@@ -280,14 +389,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.5,
+   "seconds": 12.4,
    "ok": true
   },
   {
@@ -295,14 +410,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.1,
+   "seconds": 12.8,
    "ok": true
   },
   {
@@ -310,14 +431,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 12.2,
    "ok": true
   },
   {
@@ -325,14 +452,20 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 6,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
+   "stages_completed": [
+    "detector",
+    "presence_gate",
+    "landmarks",
+    "blendshapes"
+   ],
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 12.2,
    "ok": true
   }
  ]

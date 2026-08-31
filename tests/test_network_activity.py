@@ -1701,8 +1701,24 @@ def test_child_source_exercises_the_real_liveness_provider() -> None:
     If this drifts from what authentication actually calls, the check stops
     being evidence about the product.
     """
-    assert "MediaPipeChallengeResponseLiveness" in check._CHILD_SOURCE
+    assert "LiteRtChallengeResponseLiveness" in check._CHILD_SOURCE
     assert "provider.finalize()" in check._CHILD_SOURCE
+
+
+def test_child_source_reports_every_inference_stage() -> None:
+    """A probe that stops short of the later models would still look clean.
+
+    The check's claim is that the runtime opens no socket *while doing real
+    work*. The presence gate is a place the pipeline can now legitimately
+    return early, so the probe reports each stage and refuses to continue if
+    any was missed, rather than reporting a clean PASS over a short-circuit.
+    """
+    for stage in ("detector", "presence_gate", "landmarks", "blendshapes"):
+        assert f'"{stage}"' in check._CHILD_SOURCE, f"{stage} is not reported"
+    assert "did not exercise every inference stage" in check._CHILD_SOURCE
+    assert check._CHILD_SOURCE.index("STAGE %s %s") < check._CHILD_SOURCE.index(
+        "provider.observe"
+    )
 
 
 def test_child_source_does_not_import_mediapipe() -> None:

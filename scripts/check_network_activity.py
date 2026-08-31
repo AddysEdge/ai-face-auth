@@ -217,6 +217,10 @@ class ProbeOutcome:
 
     all_connections: set[Connection] = field(default_factory=set)
     canary_seen: bool = False
+    # Inference stages the child reported completing. Recorded so a run that
+    # short-circuited before the later models is visible in the evidence
+    # rather than indistinguishable from one that did the whole pipeline.
+    stages_completed: list[str] = field(default_factory=list)
     canary_port: int | None = None
     successful_polls: int = 0
     failed_polls: list[tuple[ObserverFailure, str]] = field(default_factory=list)
@@ -270,10 +274,10 @@ if stage == "full":
     # Exercise the real liveness provider - the code path the product runs -
     # not a hand-rolled approximation of it. If this ever stops matching what
     # authentication actually calls, the check stops meaning anything.
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
     from faceauth.pipeline_types import FaceBox, Frame
 
-    provider = MediaPipeChallengeResponseLiveness(model_asset_path=landmarker_path)
+    provider = LiteRtChallengeResponseLiveness(model_asset_path=landmarker_path)
     provider.new_challenge()
 
     # A procedurally drawn face, not a blank frame: on a blank frame the
@@ -289,6 +293,24 @@ if stage == "full":
         cv2.ellipse(frame, (eye_x, 205), (16, 12), 0, 0, 360, (120, 95, 80), 1)
     cv2.line(frame, (240, 220), (240, 275), (170, 140, 120), 3)
     cv2.ellipse(frame, (240, 310), (40, 18), 0, 0, 180, (140, 90, 90), -1)
+
+    # Report each inference stage separately. The point of the check is that
+    # the runtime opens no socket *while doing real work*, so a probe that
+    # silently stopped short of the later models would still look clean. The
+    # presence gate in particular is a place the pipeline can now legitimately
+    # return early, and it must not do so here.
+    landmarker = provider._landmarker
+    stages = {
+        "detector": bool(landmarker._detect(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))),
+    }
+    probe_result = landmarker.detect(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    stages["presence_gate"] = probe_result is not None
+    stages["landmarks"] = probe_result is not None and probe_result["landmarks"].shape == (478, 2)
+    stages["blendshapes"] = probe_result is not None and len(probe_result["blendshapes"]) == 52
+    for stage_name, ok in stages.items():
+        print("STAGE %s %s" % (stage_name, "OK" if ok else "MISSED"), flush=True)
+    if not all(stages.values()):
+        raise SystemExit("probe did not exercise every inference stage: %r" % stages)
 
     face = FaceBox(x=130.0, y=90.0, width=220.0, height=300.0, confidence=0.9,
                    landmarks=((200, 205), (280, 205), (240, 250), (215, 300), (265, 300)))
@@ -670,6 +692,8 @@ def watch_child(
                 elif line == "READY":
                     outcome.reached_ready = True
                     drain_until = time.monotonic() + drain_seconds
+                elif line.startswith("STAGE ") and line.endswith(" OK"):
+                    outcome.stages_completed.append(line.split()[1])
             while True:
                 try:
                     err = err_q.get_nowait()
@@ -743,6 +767,8 @@ def watch_child(
                             outcome.child_pid = int(item.split()[1])
                     elif item == "READY":
                         outcome.reached_ready = True
+                    elif item.startswith("STAGE ") and item.endswith(" OK"):
+                        outcome.stages_completed.append(item.split()[1])
                 elif len(outcome.stderr_tail) < 400:
                     outcome.stderr_tail.append(item)
     finally:
@@ -1089,6 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
         f"  (port {outcome.canary_port})"
     )
     print(f"  child reached READY      : {'YES' if outcome.reached_ready else 'NO'}")
+    if outcome.stages_completed:
+        print(f"  inference stages run     : {', '.join(outcome.stages_completed)}")
     # Two different clocks, reported separately. The probe can finish cleanly
     # and the command budget still run out afterwards.
     print(f"  probe observation cut short : {'YES' if outcome.timed_out else 'no'}")
@@ -1154,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
                         "failed_polls": [k.name for k, _ in outcome.failed_polls],
                         "canary_seen": outcome.canary_seen,
                         "reached_ready": outcome.reached_ready,
+                        "stages_completed": outcome.stages_completed,
                         # Probe-specific: the watch loop was cut short.
                         "probe_timed_out": outcome.timed_out,
                     },

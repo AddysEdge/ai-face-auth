@@ -155,7 +155,7 @@ deliver, which would be its own kind of dishonesty.
 
 These are **blocked today** and will stay blocked until the Phase 3 entry
 criteria in `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - **every criterion,
-including B4a, B16, and B17** - pass and the repository owner records explicit
+including B4a, B16, B17, and B18** - pass and the repository owner records explicit
 written approval:
 
 - Implementing `ICredentialProvider` / `ICredentialProviderCredential2`.
@@ -177,7 +177,7 @@ backstop, not the boundary.
 
 Phase 3 is not forbidden forever - it is **not authorized yet**. To propose it:
 
-1. Confirm **every Part B entry criterion, including B4a, B16, and B17**, in
+1. Confirm **every Part B entry criterion, including B4a, B16, B17, and B18**, in
    `docs/PHASE2_ACCEPTANCE_CRITERIA.md` has evidence, and link that evidence.
    The list is not a contiguous range - do not write "B1-B15" and assume it
    covers everything.

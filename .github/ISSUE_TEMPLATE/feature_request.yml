@@ -57,7 +57,7 @@ body:
       description: >-
         Leave unticked if it is not Phase 3. Phase 3 work cannot start until
         every Part B entry criterion in
-        docs/PHASE2_ACCEPTANCE_CRITERIA.md - including B4a, B16, and B17, since the
+        docs/PHASE2_ACCEPTANCE_CRITERIA.md - including B4a, B16, B17, and B18, since the
         list is not a contiguous range - passes AND the owner records explicit
         approval. A proposal is welcome before then; implementation is not.
       options:

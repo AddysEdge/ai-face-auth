@@ -24,7 +24,7 @@ from faceauth.interfaces.quality import FaceQualityChecker
 from faceauth.interfaces.rate_limiter import RateLimiter
 from faceauth.interfaces.similarity import SimilarityEngine
 from faceauth.interfaces.template_store import TemplateStore
-from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
 from faceauth.liveness.composite import CompositeLivenessProvider
 from faceauth.liveness.passive_onnx import PassiveOnnxSpoofLiveness
 from faceauth.logging_utils import SecurityLogger, build_security_logger
@@ -74,7 +74,7 @@ def build_embedder(config: AppConfig) -> FaceEmbeddingModel:
 
 
 def build_liveness(config: AppConfig) -> LivenessProvider:
-    active = MediaPipeChallengeResponseLiveness(
+    active = LiteRtChallengeResponseLiveness(
         model_asset_path=config.liveness.landmarker_model_path,
         blink_score_high=config.liveness.blink_score_high,
         blink_score_low=config.liveness.blink_score_low,

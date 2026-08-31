@@ -1,10 +1,20 @@
 # Phase 2.5: resolving B17 — network-silent liveness
 
-**Status:** complete. **B17 is cleared.** The liveness path runs on a
-telemetry-free runtime, the `mediapipe` dependency is gone, the allowlist is
-empty, and 20 fresh-process FULL-mode network checks observed zero external
-endpoints. The corrections listed in section 1 are applied; the limitations in
-section 6 stand.
+**Status:** complete. **B17 - network silence - is cleared.** The liveness path
+runs on a telemetry-free runtime, the `mediapipe` dependency is gone, the
+allowlist is empty, and 20 fresh-process FULL-mode network checks observed zero
+external endpoints. The corrections listed in section 1 are applied; the
+limitations in section 6 stand.
+
+**B17 is not a claim about detection quality.** It says the software makes no
+outbound connections. It does *not* say the replacement detects liveness as
+well as what it replaced - the synthetic corpus cannot reach the configured
+`blink_score_high` of 0.40, so that has never been tested end to end. Real-input
+validation is Phase 3 entry criterion **B18** ([issue #14](https://github.com/AddysEdge/ai-face-auth/issues/14)), and it is **OPEN**.
+
+**Post-merge correction (2026-08-31):** an audit found two defects in this work
+- a missing face-presence gate and a non-enforcing oracle comparison. Both are
+fixed; see section 8.
 
 The blocker, restated from `docs/PHASE2_ACCEPTANCE_CRITERIA.md`:
 
@@ -131,23 +141,34 @@ model largely absorbs; on a non-square image it is an anisotropic distortion.
 
 ## 5. Measured agreement
 
-Corpus: 45 deterministic synthetic cases from
+Corpus: 46 deterministic synthetic cases from
 [`scripts/b17_option_a/corpus.py`](../scripts/b17_option_a/corpus.py) — eyelid
 openness, translation, scale, rotation, resolution (including non-square),
-edge clipping, brightness/contrast, head turn, two no-face cases, and a
-two-face case. Faces are procedurally drawn; **no camera, no real face, and no
-biometric data are involved**. The one random case uses a fixed seed.
+edge clipping, brightness/contrast, head turn, two no-face cases, a
+detector-positive/presence-negative case, and a two-face case. Faces are
+procedurally drawn; **no camera, no real face, and no biometric data are
+involved**. Both random cases use fixed seeds.
 
 Oracle: `mediapipe==1.0.1` with the pinned `face_landmarker.task`.
 Replica: `ai-edge-litert` driving the three `.tflite` files from that same bundle.
 
-| Metric | Worst over 45 cases | Where | Relevant scale |
+Every row below is **enforced** by the harness's exit status, against a limit
+declared in `scripts/b17_option_a/compare.py` before the evidence was
+regenerated. An earlier revision computed these and then exited on detection
+agreement alone, so no magnitude of error could fail it (section 8).
+
+| Metric | Limit | Worst over 46 cases | Where |
 |---|---|---|---|
-| Blink score | **0.01363** | `open0.25` | 0.20 wide decision band |
-| Landmark position | **0.00192** | `scale1.30` | normalized; ≈0.9 px at 480 px |
-| Blendshape score | **0.02779** | `scale1.30` | 0–1 |
-| Head-turn ratio | **0.00298** | `rot-12` | `head_turn_min_swing` = 0.045 |
-| Detection agreement | **45 / 45** | — | includes both no-face cases |
+| Landmark position | 1.0 px | **0.92339 px** | `scale1.30` |
+| Blink score | 0.02 | **0.01363** | `open0.25` |
+| Head-turn ratio | 0.0045 | **0.00298** | `rot-12` |
+| Blendshape score (each of 52) | 0.05 | **0.02779** | `scale1.30` |
+| Detection agreement | 100% | **46 / 46** | — |
+| Presence-gate agreement | 100% | **44 / 44** | over the cases where the detector fired |
+
+Landmark error is enforced in *source pixels*, not normalized units: x is
+normalized by width and y by height, so a fixed normalized limit would be
+lenient on large frames and harsh on small ones.
 
 ### Where the residual comes from
 
@@ -216,7 +237,8 @@ present. Each run is a fresh process.
 | Exit code 0 | 20 / 20 |
 | Mode `full` | 20 / 20 |
 | Loopback canary observed | 20 / 20 |
-| Successful OS queries | 8-10 per run, never 0 |
+| Successful OS queries | 5-6 per run, never 0 |
+| Inference stages completed | **4 / 4 on every run** (detector, presence gate, landmarks, blendshapes) |
 | Failed OS queries | 0 across all 20 |
 | Command deadline expired | never |
 | **External endpoints observed** | **0 across all 20 runs** |
@@ -235,7 +257,80 @@ but never run inference, and a runtime that only phoned home after doing real
 work would go unobserved. The run output prints the liveness reason, so a
 regression back to a blank-frame probe is visible rather than silent.
 
-## 8. Reproducing this
+## 8. Post-merge correction (2026-08-31)
+
+An audit after PR #9 merged found two defects in the work above. Neither
+changes the network-silence result — that is an OS-level observation of
+connections, independent of landmark correctness — but both are corrected, and
+the evidence in sections 5 and 7 was regenerated against the fixed code.
+
+### 8.1 The landmark face-presence gate was missing
+
+The published graph does not accept landmarks because the face detector fired.
+`face_landmarks_detector_graph.cc` splits the landmark model's output tensors
+(`kFaceLandmarksOutputTensorsNum = 2`, so presence is the tensor at declared
+output index 1), sigmoids the presence logit through
+`TensorsToFloatsCalculator`, thresholds it with `ThresholdingCalculator` at
+`min_detection_confidence` (default 0.5), and gates **both** the projected
+landmarks and the blendshapes behind that flag with `AllowIf`.
+`ThresholdingCalculator::Process` computes
+`accept = static_cast<double>(value) > threshold_` — strictly greater, so a
+score of exactly 0.5 rejects.
+
+`_landmarks_for()` picked the landmark tensor by size and ignored the presence
+output entirely, so the second stage could not reject anything the first stage
+let through: a fail-open gate in a security control.
+
+Inspecting the shipped bundle shows the landmark model has **three** outputs,
+two of them float32 scalars:
+
+| Declared index | Name | Shape | Role |
+|---|---|---|---|
+| 0 | `Identity` | (1,1,1,1434) | 478×3 landmarks |
+| 1 | `Identity_1` | (1,1,1,1) | **face-presence logit** |
+| 2 | `Identity_2` | (1,1) | not consumed by the graph |
+
+Measured directly against the model, `Identity_1` reads **+10.28** on a
+synthetic face and **−12.6 to −14.1** on noise, flat black and flat white,
+while `Identity_2` barely moves (0.50–0.73 after sigmoid). Shape alone
+therefore cannot tell the two scalars apart, and MediaPipe's own selection is
+positional. The implementation takes MediaPipe's positions and *validates*
+shape and dtype at each, refusing to load if the layout is not the one it was
+written against.
+
+The gate is not theoretical. A new corpus case, `presence_gate_reject` — noise
+behind a blank skin-tone oval — makes the detector fire at **0.63** while the
+presence logit returns about **−15**. The MediaPipe oracle returns zero faces
+for it. Before this fix the replica accepted it and produced landmarks and
+blendshapes for a blank oval.
+
+Non-finite presence is an error rather than a value: `+inf` would sigmoid to
+1.0 and pass the threshold, turning a broken model into a confident accept.
+
+### 8.2 The oracle comparison was non-enforcing
+
+`compare.py` returned `0 if detection_agreement == cases else 1`. Landmark,
+blink, blendshape and turn-ratio errors were computed, printed and stored, but
+no magnitude of error could fail the command — and CI never ran it at all.
+Tolerances are now declared in the module and enforced by exit status, presence
+agreement is tracked separately from detection agreement, and a dedicated CI
+job runs the comparison against a `mediapipe==1.0.1` oracle in a separate,
+deliberately **non**-network-silent environment.
+
+### 8.3 The rest of the graph, audited
+
+Checked for the same class of omission and found correct: the detector's
+`min_score_thresh` comparison (`tensors_to_detections_calculator.cc` skips on
+`score < thresh`, so `>=` accepts — a *different* operator from the presence
+gate's `>`), score clipping before the sigmoid, `WEIGHTED` NMS blending rather
+than dropping, letterbox removal, `ClipVectorSize` bounding results to
+`num_faces`, the blendshape split range `[0,1)`, and
+`TensorsToClassificationCalculator` returning coefficients as-is with `top_k`
+disabled — no activation.
+
+---
+
+## 9. Reproducing this
 
 ```
 python scripts/fetch_models.py                 # pinned, checksum-verified
@@ -244,16 +339,26 @@ python -m scripts.b17_option_a.compare --out docs/b17/option_a_results.json
 
 The harness fails with an explicit message — it does not silently skip — if the
 pinned `face_landmarker.task` is absent, if `ai-edge-litert` is missing, or if
-`mediapipe` is unavailable for the oracle leg. Model weights, binaries, and
-per-case images are **not** committed; only the generator, the runners, and the
-small machine-readable results file are.
+`mediapipe` is unavailable for the oracle leg. **It also exits nonzero if any
+declared tolerance is exceeded**, so it is usable as a gate rather than a
+report. Model weights, binaries, and per-case images are **not** committed;
+only the generator, the runners, and the small machine-readable results file
+are.
+
+`mediapipe` is deliberately **not** a project dependency, so the oracle leg
+needs a throwaway environment. CI runs it in the `oracle-equivalence` job,
+which installs `mediapipe==1.0.1` alongside the normal pinned set. That
+environment is **not** network-silent and is not evidence about B17; the
+network evidence comes from the `python` job, which asserts `mediapipe` is
+absent before it measures anything.
 
 ---
 
-## 9. Status
+## 10. Status
 
 | Item | State |
 |---|---|
-| **B17** | **Cleared**, with the section 6 limitations stated. |
+| **B17** | **Cleared** - network silence only, with the section 6 limitations stated. |
+| **B18** | **Open.** Real-input liveness validation: genuine blinks and non-blinks, the configured 0.40/0.20 thresholds actually exercised, FAR/FRR, static-photo and replay attacks, lighting/pose/distance/camera variation, a written calibration methodology, and a recorded security review. Not satisfiable by more synthetic measurement. |
 | **ADR-0005** | *Accepted* - Option A implemented. Option B was not needed and remains available and unverified. |
-| **Phase 3 entry** | B17 no longer blocks it. |
+| **Phase 3 entry** | B17 no longer blocks it. **B18 does.** |

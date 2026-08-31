@@ -473,13 +473,14 @@ No file under `src/`, `tests/`, or `scripts/` was modified in Phase 2.
 | **B15** | **Unresolved: no password-free, OS-mediated enrollment-authorization mechanism has been proven.** The previously claimed one does not qualify. Without it, pre-logon enrollment cannot be authorized safely and Phase 3 cannot proceed. | ADR-0004 5.1a |
 | **B4a** | Not yet done: strong certificate binding verified against a **Full Enforcement** domain controller, including observing a weak-mapped certificate fail with Event ID 39. | ADR-0001 E8 |
 | **B16** | Deferred by design: in-flight cancellation requires a genuinely bounded/cancellable backend and an asynchronous or otherwise interruptible service. Version 1 has neither. | ADR-0003 5.8/5.9 |
-| **B17** | **Unresolved: the verification path is not network-silent.** Section 3.4 specifies the verifier service with no network access, and the current dependency set cannot meet that - MediaPipe uploads usage telemetry to `play.googleapis.com` with no supported opt-out. A design conflict, not a documentation problem. | ADR-0005, `docs/PRIVACY_NETWORK_AUDIT.md` |
+| **B17** | **Resolved in Phase 2.5: the verification path is network-silent.** Section 3.4 specifies the verifier service with no network access. The MediaPipe dependency that could not meet that - it uploaded usage telemetry to `play.googleapis.com` with no supported opt-out - has been replaced by `ai-edge-litert` running the same pinned weights, and 20 fresh-process OS-level checks with an empty allowlist observed zero external endpoints. | ADR-0005, `docs/PHASE2_5_B17_RESEARCH.md` |
+| **B18** | **Unresolved: the liveness replacement has no real-input validation.** B17 established network silence and synthetic agreement with the runtime it replaced; neither is evidence of equivalent FAR/FRR or spoof resistance, and the synthetic corpus provably cannot reach the configured `blink_score_high` of 0.40. Needs real input, real thresholds, spoof cases, and a recorded security review. | ADR-0005, `docs/PHASE2_ACCEPTANCE_CRITERIA.md` B18 |
 
 **This table lists the architecture-critical blockers, not the whole gate.** The
 canonical list is `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B, and **every**
-criterion in it must pass - B1, B2, B3, B4, B4a, B5-B14, B15, B16, and B17.
-The identifiers are not a contiguous range, so "B1-B15" silently omits three of
-them.
+criterion in it must pass - B1, B2, B3, B4, B4a, B5-B14, B15, B16, B17, and
+B18. The identifiers are not a contiguous range, so "B1-B15" silently omits
+four of them.
 
 ### Accepted risks
 

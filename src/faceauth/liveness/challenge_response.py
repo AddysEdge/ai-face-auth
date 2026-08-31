@@ -1,4 +1,14 @@
-"""Active challenge-response liveness via MediaPipe Face Landmarker.
+"""Active challenge-response liveness via the MediaPipe Face Landmarker models.
+
+The *models* are MediaPipe's, downloaded as the pinned ``face_landmarker.task``
+bundle. The *runtime* is not: the graph around those weights is reimplemented
+in ``faceauth.liveness.litert_landmarker`` on top of ``ai-edge-litert``,
+because the MediaPipe wheel uploads usage telemetry to ``play.googleapis.com``
+on session teardown with no supported way to disable it, which blocks
+acceptance criterion B17. Thresholds, landmark indices, and the decision
+functions below are unchanged by that switch - see
+``docs/PHASE2_5_B17_RESEARCH.md`` for the measured agreement between the two
+runtimes on the same weights.
 
 This is the primary, default liveness signal (see docs/RESEARCH.md section 3
 for why: it is deterministic, testable, and does not depend on a stale
@@ -32,12 +42,11 @@ import random
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
+import numpy as np
 
 from faceauth.exceptions import LivenessError, ModelInferenceError, ModelInitializationError
 from faceauth.interfaces.liveness import LivenessProvider
+from faceauth.liveness.litert_landmarker import LiteRtFaceLandmarker
 from faceauth.pipeline_types import ChallengeKind, FaceBox, Frame, LivenessResult
 
 _NOSE_TIP_IDX = 1
@@ -45,11 +54,10 @@ _RIGHT_EYE_OUTER_IDX = 33
 _LEFT_EYE_OUTER_IDX = 263
 
 
-def _blink_score(blendshapes: list) -> float:
-    scores: dict[str, float] = {c.category_name: c.score for c in blendshapes}
+def _blink_score(blendshapes: dict[str, float]) -> float:
     try:
-        left = scores["eyeBlinkLeft"]
-        right = scores["eyeBlinkRight"]
+        left = blendshapes["eyeBlinkLeft"]
+        right = blendshapes["eyeBlinkRight"]
     except KeyError as exc:
         raise ModelInferenceError(
             f"expected blendshape categories not present in Face Landmarker output: {exc}"
@@ -57,15 +65,21 @@ def _blink_score(blendshapes: list) -> float:
     return (left + right) / 2.0
 
 
-def _turn_ratio(landmarks: list) -> float:
-    nose = landmarks[_NOSE_TIP_IDX]
-    right_eye = landmarks[_RIGHT_EYE_OUTER_IDX]
-    left_eye = landmarks[_LEFT_EYE_OUTER_IDX]
-    eye_midpoint_x = (right_eye.x + left_eye.x) / 2.0
-    inter_eye_distance = abs(left_eye.x - right_eye.x)
+def _turn_ratio(landmarks: np.ndarray) -> float:
+    """Signed nose offset between the eye corners, in inter-eye units.
+
+    ``landmarks`` is the (478, 2) image-normalized array; indices 1 / 33 / 263
+    are FaceMesh's fixed canonical topology and are unchanged from the
+    MediaPipe-runtime implementation.
+    """
+    nose_x = float(landmarks[_NOSE_TIP_IDX][0])
+    right_eye_x = float(landmarks[_RIGHT_EYE_OUTER_IDX][0])
+    left_eye_x = float(landmarks[_LEFT_EYE_OUTER_IDX][0])
+    eye_midpoint_x = (right_eye_x + left_eye_x) / 2.0
+    inter_eye_distance = abs(left_eye_x - right_eye_x)
     if inter_eye_distance < 1e-6:
         raise ModelInferenceError("degenerate inter-eye distance from landmarks")
-    return (nose.x - eye_midpoint_x) / inter_eye_distance
+    return (nose_x - eye_midpoint_x) / inter_eye_distance
 
 
 def decide_blink(blink_scores: list[float], high: float, low: float) -> LivenessResult:
@@ -133,14 +147,9 @@ class MediaPipeChallengeResponseLiveness(LivenessProvider):
                 f"Face Landmarker model bundle not found: {model_asset_path}"
             )
         try:
-            options = vision.FaceLandmarkerOptions(
-                base_options=mp_python.BaseOptions(model_asset_path=str(model_asset_path)),
-                output_face_blendshapes=True,
-                output_facial_transformation_matrixes=False,
-                num_faces=1,
-                running_mode=vision.RunningMode.IMAGE,
-            )
-            self._landmarker = vision.FaceLandmarker.create_from_options(options)
+            self._landmarker = LiteRtFaceLandmarker(model_asset_path)
+        except ModelInitializationError:
+            raise
         except Exception as exc:
             raise ModelInitializationError(f"failed to load Face Landmarker: {exc}") from exc
 
@@ -162,16 +171,13 @@ class MediaPipeChallengeResponseLiveness(LivenessProvider):
         if self._challenge is None:
             raise LivenessError("observe() called with no active challenge; call new_challenge() first")
         rgb = cv2.cvtColor(frame.image, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect(mp_image)
-        if not result.face_landmarks:
+        result = self._landmarker.detect(rgb)
+        if result is None:
             return  # no face this instant; still within the window, just skip
-        landmarks = result.face_landmarks[0]
-        blendshapes = result.face_blendshapes[0] if result.face_blendshapes else []
         self._observations.append(
             {
-                "blink": _blink_score(blendshapes),
-                "turn": _turn_ratio(landmarks),
+                "blink": _blink_score(result["blendshapes"]),
+                "turn": _turn_ratio(result["landmarks"]),
                 "t": frame.timestamp,
             }
         )

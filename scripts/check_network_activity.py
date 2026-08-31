@@ -2,12 +2,16 @@
 
 Why this is not a Python-level check
 ------------------------------------
-The one outbound connection this project actually makes is opened from native
+The one outbound connection this project used to make was opened from native
 code inside MediaPipe's bundled `libmediapipe.dll`, using its own HTTP client.
-It never enters CPython's `socket` module, so patching `socket.socket.connect`
-observes *nothing* - and did observe nothing for the entire life of the defect
+It never entered CPython's `socket` module, so patching `socket.socket.connect`
+observed *nothing* - and did observe nothing for the entire life of the defect
 this check exists to prevent recurring. See `docs/PRIVACY_NETWORK_AUDIT.md`
 section 1.5.
+
+That dependency has since been removed and the allowlist is empty, so this
+check now exists to prove the absence stays true. The reasoning is unchanged:
+any dependency can open a socket from native code, and only the OS can see it.
 
 So this check runs one level down. It launches a child process that exercises
 the runtime, and the *parent* asks Windows which TCP connections that child
@@ -62,10 +66,11 @@ a theoretical one. An address that matches nothing stays unresolved and is
 treated as undeclared, which fails - but the converse does not hold, and no
 claim to the contrary is made anywhere in this file.
 
-The independent evidence that `play.googleapis.com` is genuinely the
-destination is separate from this check: the endpoint literal in
-`libmediapipe.dll` and the measured correlation with MediaPipe session
-teardown, both recorded in `docs/PRIVACY_NETWORK_AUDIT.md`.
+The independent evidence that `play.googleapis.com` was genuinely the
+destination, back when the MediaPipe wheel was a dependency, is separate from
+this check: the endpoint literal in `libmediapipe.dll` and the measured
+correlation with MediaPipe session teardown, both recorded in
+`docs/PRIVACY_NETWORK_AUDIT.md`.
 
 What it proves, and what it does not
 ------------------------------------
@@ -144,9 +149,11 @@ MIN_RESOLVE_BUDGET = 0.5
 # can contribute is stated honestly in the docs rather than hidden.
 CHILD_REAP_TIMEOUT = 10.0
 
-# How long the child holds a MediaPipe session open before tearing it down.
-# Measured: the upload happens even at a dwell of 0.0s, so this is not required
-# to make the trigger fire and is deliberately not presented as a threshold.
+# How long the child holds a liveness session open before tearing it down.
+# Measured against the MediaPipe runtime this replaced: the upload happened even
+# at a dwell of 0.0s, so this is not required to make the trigger fire and is
+# deliberately not presented as a threshold. It is kept so that a runtime which
+# batches or delays an upload still has a window in which to make one.
 SESSION_DWELL_SECONDS = 1.0
 
 # Emitted by every PowerShell helper as the last line of a successful run.
@@ -253,26 +260,29 @@ print("CANARY_CONNECTED", flush=True)
 import numpy            # noqa: F401
 import cv2              # noqa: F401
 import onnxruntime      # noqa: F401
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
+import ai_edge_litert   # noqa: F401
 import faceauth         # noqa: F401
 print("IMPORTS_DONE", flush=True)
 
 if stage == "full":
     landmarker_path = sys.argv[3]
     dwell = float(sys.argv[4])
-    opts = mp_vision.FaceLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=landmarker_path),
-        output_face_blendshapes=True,
-        num_faces=1,
-    )
-    lm = mp_vision.FaceLandmarker.create_from_options(opts)
+    # Exercise the real liveness provider - the code path the product runs -
+    # not a hand-rolled approximation of it. If this ever stops matching what
+    # authentication actually calls, the check stops meaning anything.
+    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.pipeline_types import ChallengeKind, FaceBox, Frame
+
+    provider = MediaPipeChallengeResponseLiveness(model_asset_path=landmarker_path)
+    provider.new_challenge()
     # Synthetic frame only. No camera, no biometric data.
     frame = numpy.zeros((240, 320, 3), dtype=numpy.uint8)
-    lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=frame))
+    face = FaceBox(x=100.0, y=60.0, width=120.0, height=140.0, confidence=0.9,
+                   landmarks=((130, 100), (170, 100), (150, 130), (135, 160), (165, 160)))
+    provider.observe(Frame(image=frame, timestamp=0.0), face)
+    provider.finalize()
     time.sleep(dwell)
-    lm.close()          # <-- this is what triggers the telemetry upload
+    del provider        # teardown: where the MediaPipe runtime used to upload
     print("SESSION_DONE", flush=True)
 
 print("READY", flush=True)
@@ -1001,9 +1011,9 @@ def main(argv: list[str] | None = None) -> int:
     print("OS-LEVEL OUTBOUND NETWORK CHECK")
     print("=" * 72)
     if stage == "full":
-        print("mode: FULL - imports + a real MediaPipe session including teardown")
+        print("mode: FULL - imports + a real liveness session including teardown")
     else:
-        print("mode: IMPORTS ONLY - model weights absent, so the MediaPipe session")
+        print("mode: IMPORTS ONLY - model weights absent, so the liveness session")
         print("      stage is skipped. This catches a dependency that phones home")
         print("      on import, but it does NOT cover the session-teardown upload,")
         print("      and no result here should be read as covering it.")

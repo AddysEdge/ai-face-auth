@@ -8,7 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     "opencv-contrib-python==5.0.0.93",
     "onnxruntime==1.29.0",
-    "mediapipe==1.0.1",
+    "ai-edge-litert==2.2.0",
     "numpy==2.5.2",
     "cryptography==50.0.0",
     "pydantic==2.13.4",

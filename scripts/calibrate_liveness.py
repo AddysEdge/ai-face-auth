@@ -26,15 +26,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import cv2  # noqa: E402
-import mediapipe as mp  # noqa: E402
-from mediapipe.tasks import python as mp_python  # noqa: E402
-from mediapipe.tasks.python import vision  # noqa: E402
 
 from faceauth.liveness.challenge_response import (  # noqa: E402
     _NOSE_TIP_IDX,
     _blink_score,
     _turn_ratio,
 )
+from faceauth.liveness.litert_landmarker import LiteRtFaceLandmarker  # noqa: E402
 
 LANDMARKER_PATH = REPO_ROOT / "models" / "face_landmarker.task"
 
@@ -45,14 +43,9 @@ def main() -> int:
     parser.add_argument("--device-index", type=int, default=0)
     args = parser.parse_args()
 
-    options = vision.FaceLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=str(LANDMARKER_PATH)),
-        output_face_blendshapes=True,
-        output_facial_transformation_matrixes=False,
-        num_faces=1,
-        running_mode=vision.RunningMode.IMAGE,
-    )
-    landmarker = vision.FaceLandmarker.create_from_options(options)
+    # Same runtime the liveness provider uses, so the numbers printed here are
+    # the numbers the thresholds will actually be compared against.
+    landmarker = LiteRtFaceLandmarker(LANDMARKER_PATH)
 
     cap = cv2.VideoCapture(args.device_index, cv2.CAP_ANY)
     if not cap.isOpened():
@@ -70,19 +63,17 @@ def main() -> int:
             if not ok:
                 continue
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result = landmarker.detect(mp_image)
-            if not result.face_landmarks:
+            result = landmarker.detect(rgb)
+            if result is None:
                 print("no face", end="\r")
                 continue
-            landmarks = result.face_landmarks[0]
-            blendshapes = result.face_blendshapes[0] if result.face_blendshapes else []
-            blink = _blink_score(blendshapes)
+            landmarks = result["landmarks"]
+            blink = _blink_score(result["blendshapes"])
             turn = _turn_ratio(landmarks)
             elapsed = time.monotonic() - start
             print(
                 f"t={elapsed:5.1f}s  blink_score={blink:6.3f}  turn_ratio={turn:+6.3f}"
-                f"  nose_x={landmarks[_NOSE_TIP_IDX].x:.3f}"
+                f"  nose_x={landmarks[_NOSE_TIP_IDX][0]:.3f}"
             )
     finally:
         cap.release()

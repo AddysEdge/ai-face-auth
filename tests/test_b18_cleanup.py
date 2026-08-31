@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.b18_stage0 import cli  # noqa: E402
+from scripts.b18_stage0 import cleanup, cli  # noqa: E402
 from scripts.b18_stage0.cleanup import (  # noqa: E402
     DISCLAIMER,
     UnsafeTarget,
@@ -109,6 +109,90 @@ def test_home_data_folders_are_refused_and_not_deleted(name):
     with pytest.raises(UnsafeTarget):
         assert_safe_target(target, Path.home())
     assert target.is_dir(), "a refused target must still exist"
+
+
+def test_a_verified_workspace_still_cannot_reach_a_home_data_folder(workspace):
+    """Exercise the protected-path branch itself.
+
+    Passing ``Path.home()`` as the workspace fails at workspace verification, so
+    it never reaches the forbidden-path check. A *verified* workspace with a
+    protected target does.
+    """
+    target = Path.home() / "AppData"
+    if not target.is_dir():
+        pytest.skip("AppData does not exist on this machine")
+    # Either refusal is correct: AppData also holds junctions ("Application
+    # Data"), and the reparse-point check runs first.
+    with pytest.raises(UnsafeTarget, match="protected path|reparse point"):
+        assert_safe_target(target, workspace)
+    assert target.is_dir(), "a refused target must still exist"
+
+
+# --------------------------- REGRESSION: cloud-redirected known folders
+#
+# Found during final verification: on this machine ``home/Desktop`` and
+# ``home/Pictures`` do not exist, because Windows known-folder redirection -
+# the consumer Windows 11 default - moved them under ``home/OneDrive``. A guard
+# naming only ``home/<name>`` therefore listed folders that do not exist while
+# missing the ones that hold the real files.
+
+
+def test_redirected_data_folders_are_forbidden(tmp_path, monkeypatch, workspace):
+    """A redirected Documents folder is protected, not just ``home/Documents``."""
+    redirected = tmp_path / "OneDrive"
+    (redirected / "Documents").mkdir(parents=True)
+    monkeypatch.setenv("OneDrive", str(redirected))
+
+    assert redirected / "Documents" in cleanup._forbidden_paths()
+    with pytest.raises(UnsafeTarget, match="protected path"):
+        assert_safe_target(redirected / "Documents", workspace)
+    assert (redirected / "Documents").is_dir(), "a refused target must still exist"
+
+
+def test_the_redirection_root_and_its_ancestors_are_forbidden(tmp_path, monkeypatch):
+    redirected = tmp_path / "OneDrive"
+    redirected.mkdir()
+    monkeypatch.setenv("OneDrive", str(redirected))
+
+    forbidden = cleanup._forbidden_paths()
+    assert redirected in forbidden
+    assert tmp_path in forbidden, "an ancestor of a redirection root must be protected"
+
+
+@pytest.mark.parametrize("variable", ["OneDriveConsumer", "OneDriveCommercial"])
+def test_every_onedrive_variable_is_honoured(tmp_path, monkeypatch, variable):
+    redirected = tmp_path / variable
+    (redirected / "Desktop").mkdir(parents=True)
+    for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, str(redirected))
+
+    assert redirected / "Desktop" in cleanup._forbidden_paths()
+
+
+def test_a_relative_or_empty_variable_is_ignored_without_crashing(monkeypatch):
+    monkeypatch.setenv("OneDrive", "   ")
+    monkeypatch.setenv("OneDriveConsumer", "relative/path")
+    forbidden = cleanup._forbidden_paths()
+    assert Path.home() in forbidden, "the guard must still work"
+    assert Path("relative/path").resolve() not in forbidden
+
+
+def test_the_real_redirected_folders_on_this_machine_are_refused(workspace):
+    """Whatever this machine's actual layout is, its real data folders are safe."""
+    home = Path.home().resolve()
+    roots = [home, *sorted(cleanup._redirection_roots(home))]
+    checked = 0
+    for root in roots:
+        for name in cleanup.USER_DATA_FOLDERS:
+            target = root / name
+            if not target.is_dir():
+                continue
+            checked += 1
+            with pytest.raises(UnsafeTarget, match="protected path|reparse point"):
+                assert_safe_target(target, workspace)
+            assert target.is_dir(), f"a refused target must still exist: {target}"
+    assert checked, "expected at least one real user data folder to check"
 
 
 def test_the_repository_is_not_a_workspace():

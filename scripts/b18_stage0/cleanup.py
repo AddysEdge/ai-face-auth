@@ -30,6 +30,8 @@ manufacture that. A path outside such a workspace is refused whatever
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,46 @@ class UnsafeTarget(Exception):
     """The requested deletion target was refused. Nothing was removed."""
 
 
+USER_DATA_FOLDERS = (
+    "AppData",
+    "Documents",
+    "Desktop",
+    "Downloads",
+    "Pictures",
+    "Videos",
+)
+
+
+def _redirection_roots(home: Path) -> set[Path]:
+    """Roots that a cloud client may have redirected the known folders into.
+
+    Windows known-folder redirection is the default on consumer Windows 11:
+    ``Desktop``, ``Documents`` and ``Pictures`` commonly live under
+    ``%USERPROFILE%/OneDrive`` and do **not** exist at ``home/<name>`` at all.
+    Naming only the un-redirected paths would leave the guard listing folders
+    that do not exist while missing the ones that do - verified on the machine
+    this was written on, where ``home/Desktop`` is absent and
+    ``home/OneDrive/Desktop`` holds the real files.
+
+    Read from the environment rather than the registry: no system or security
+    configuration is inspected or changed, and the behaviour stays testable by
+    setting a variable.
+    """
+    roots: set[Path] = set()
+    for variable in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        value = os.environ.get(variable, "").strip()
+        if not value:
+            continue
+        candidate = Path(value)
+        if candidate.is_absolute():
+            roots.add(candidate)
+    # Cover a client that did not export a variable, and the per-tenant
+    # "OneDrive - Contoso" naming, without globbing outside the home directory.
+    with contextlib.suppress(OSError):
+        roots.update(child for child in home.iterdir() if child.name.startswith("OneDrive"))
+    return {root.resolve() for root in roots}
+
+
 def _forbidden_paths() -> set[Path]:
     """Paths that must never be a deletion target, whatever a caller passes."""
     home = Path.home().resolve()
@@ -60,8 +102,11 @@ def _forbidden_paths() -> set[Path]:
     forbidden |= set(REPO_ROOT.parents)
     forbidden |= set(home.parents)
     # Named explicitly because these were the paths the previous model accepted.
-    for name in ("AppData", "Documents", "Desktop", "Downloads", "Pictures", "Videos"):
-        forbidden.add(home / name)
+    for root in {home, *_redirection_roots(home)}:
+        forbidden.add(root)
+        forbidden |= set(root.parents)
+        for name in USER_DATA_FOLDERS:
+            forbidden.add(root / name)
     return forbidden
 
 
@@ -90,8 +135,9 @@ def assert_safe_target(target: Path, workspace: Path) -> Path:
         raise UnsafeTarget(f"refusing a filesystem root: {resolved}")
     if resolved in _forbidden_paths():
         raise UnsafeTarget(
-            f"refusing a protected path (repository, home, a home data folder, "
-            f"cwd, the temp root, or an ancestor of one): {resolved}"
+            f"refusing a protected path (repository, home, a user data folder "
+            f"including its cloud-redirected location, cwd, the temp root, or an "
+            f"ancestor of one): {resolved}"
         )
     if resolved == REPO_ROOT or REPO_ROOT in resolved.parents:
         raise UnsafeTarget(f"refusing a target inside the repository: {resolved}")

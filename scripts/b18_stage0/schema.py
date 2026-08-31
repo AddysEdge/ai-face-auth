@@ -1,29 +1,41 @@
-"""Validation of B18 session manifests against the published schema.
+"""Strict validation of B18 Stage 0 session manifests.
 
 The normative schema is ``docs/b18/forms/TRIAL_MANIFEST_SCHEMA.md``; this module
-enforces it. Nothing here reads a camera, and nothing here is specific to real
-participants - it validates a JSON document.
+enforces it, and enforces it *strictly*.
 
-Design stance: **fail closed, and never drop a trial silently.** A manifest that
-cannot be fully validated is rejected in its entirety rather than analysed in
-part, because a partially-validated manifest produces rates whose denominators
-nobody can defend.
+Two stances worth stating up front, because an earlier revision of this file got
+both wrong:
 
-Every check returns a precise, human-readable finding naming the exact JSON path
-that failed, so a rejection is actionable rather than a bare "invalid".
+**Whitelist, not blacklist.** Every object has an exact allowed key set and an
+unknown key is a hard failure. A blacklist of identifying field names is a
+guess about what a leak will be called - ``ssn`` and
+``participant_contact_info`` both sailed past the previous blacklist. A
+whitelist cannot be out-guessed.
+
+**Synthetic-only.** A manifest must declare
+``"data_classification": "synthetic_stage0"``. Anything else is refused. Stage 0
+tooling must not be able to consume a real participant manifest and emit a
+report calling the data synthetic. Handling Stage 1 or Stage 2 manifests
+requires a separate, owner-authorized, reviewed change - not a flag on this one.
+
+Nothing here reads a camera or a network. It validates a JSON document.
 """
 
 from __future__ import annotations
 
+import datetime as _datetime
 import math
 import re
 from typing import Any
 
-# ---------------------------------------------------------------- vocabularies
+# --------------------------------------------------------------- vocabularies
 
 GENUINE_BLINK_TYPES = ("G1", "G2", "G3")
 GENUINE_NON_BLINK_TYPES = ("N1", "N2", "N3")
-SPOOF_TYPES = ("S1", "S2", "S3", "S4", "S5")
+STILL_SPOOF_TYPES = ("S1", "S2", "S3")   # printed photo / still display
+REPLAY_SPOOF_TYPES = ("S4",)             # video replay - the known gap
+OTHER_SPOOF_TYPES = ("S5",)
+SPOOF_TYPES = STILL_SPOOF_TYPES + REPLAY_SPOOF_TYPES + OTHER_SPOOF_TYPES
 TRIAL_TYPES = GENUINE_BLINK_TYPES + GENUINE_NON_BLINK_TYPES + SPOOF_TYPES
 
 LIGHTING = ("bright_even", "dim", "side_light", "backlit")
@@ -33,6 +45,8 @@ EYEWEAR = ("none", "clear_glasses", "tinted")
 ATTEMPT_OUTCOMES = ("accepted", "rejected")
 GROUND_TRUTHS = ("blink", "no_blink", "spoof")
 SELF_REPORTS = ("blinked", "did_not_blink", "unsure", "n/a")
+LABEL_SOURCES = ("schedule+self_report", "schedule_only")
+
 EXCLUSION_REASONS = (
     "no_face_detected",
     "missed_prompt",
@@ -41,57 +55,81 @@ EXCLUSION_REASONS = (
     "ambiguous_ground_truth",
 )
 
-# Pseudonymous identifiers only. A name would not match these.
-PARTICIPANT_ID_RE = re.compile(r"^P\d{2,4}$")
-SESSION_ID_RE = re.compile(r"^S\d{2,4}$")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+# Only these excluded reasons may honestly carry zero observations. A trial the
+# detector never saw a face in has nothing to record; fabricating a score series
+# to satisfy a validator would be inventing data.
+EMPTY_OBSERVATION_REASONS = ("no_face_detected", "software_error")
 
-# Schema §"Prohibited fields". Checked at every nesting depth, on key names.
-PROHIBITED_KEYS = frozenset(
-    {
-        "name", "first_name", "last_name", "full_name", "initials",
-        "email", "e_mail", "mail", "phone", "telephone", "address",
-        "account", "account_id", "user", "user_id", "username", "login",
-        "dob", "date_of_birth", "birthdate", "age",
-        "serial", "serial_number", "device_serial", "mac", "mac_address",
-        "photo", "photograph", "frame", "frames", "image", "images",
-        "video", "recording", "audio", "signature", "contact",
-        "file_path", "filepath", "path", "media_path", "media",
-    }
+# The four reasons the shipping BLINK path can produce - see
+# challenge_response.decide_blink, finalize, and capture_utils.
+OUTCOME_REASONS = (
+    "blink_detected",
+    "no_transient_blink_detected",
+    "no_face_observed_during_challenge",
+    "face_detection_unstable",
 )
 
-# Bounds. Blink blendshape scores are 0..1 by construction.
-SCORE_MIN, SCORE_MAX = 0.0, 1.0
-DISTANCE_MIN_CM, DISTANCE_MAX_CM = 10, 500
-MAX_FRAMES_ABSOLUTE = 100_000
+# The classification this tool - and only this tool - will process.
+REQUIRED_DATA_CLASSIFICATION = "synthetic_stage0"
 
-# Derived values are recomputed and compared, not trusted. The tolerance covers
-# JSON round-tripping of float32-derived values, not disagreement.
-DERIVED_TOLERANCE = 1e-6
+# capture_utils.run_liveness_challenge's default. The continuity override only
+# applies once at least this many frames were captured.
+MIN_FRAMES_FOR_CONTINUITY_CHECK = 5
 
-REQUIRED_SESSION_KEYS = (
-    "session_id", "participant_id", "date", "operator_role",
-    "randomisation_seed", "provenance", "trials",
-)
-REQUIRED_PROVENANCE_KEYS = (
+# ------------------------------------------------------------- exact key sets
+
+SESSION_KEYS = frozenset({
+    "session_id", "participant_id", "date", "operator_role", "randomisation_seed",
+    "data_classification", "provenance", "trials",
+})
+PROVENANCE_KEYS = frozenset({
     "faceauth_commit", "python_version", "pinned_dependencies",
     "face_landmarker_sha256", "liveness_config", "camera_label",
     "camera_resolution", "os_build",
-)
-REQUIRED_CONFIG_KEYS = (
+})
+CONFIG_KEYS = frozenset({
     "blink_score_high", "blink_score_low", "enabled_challenges",
     "challenge_timeout_seconds", "max_frames_per_challenge", "min_face_continuity",
-)
-REQUIRED_TRIAL_KEYS = (
-    "trial_index", "intended_type", "condition", "blink_scores",
+})
+TRIAL_KEYS = frozenset({
+    "trial_index", "intended_type", "condition", "blink_scores", "turn_ratios",
     "max_blink_score", "min_blink_score", "frames_captured", "frames_with_face",
     "face_continuity", "attempt_outcome", "outcome_reason", "ground_truth",
     "self_report", "label_source", "valid", "exclusion_reason",
-    "retry_of_trial_index",
-)
-REQUIRED_CONDITION_KEYS = ("lighting", "head_pose", "distance_cm", "eyewear")
+    "retry_of_trial_index", "notes",
+})
+CONDITION_KEYS = frozenset({"lighting", "head_pose", "distance_cm", "eyewear"})
+
+# ------------------------------------------------------------------- patterns
+
+PARTICIPANT_ID_RE = re.compile(r"^P\d{2,4}$")
+SESSION_ID_RE = re.compile(r"^S\d{2,4}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+PYTHON_VERSION_RE = re.compile(r"^3\.\d{1,2}(\.\d{1,3})?$")
+RESOLUTION_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
+DEP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DEP_VERSION_RE = re.compile(r"^[0-9][A-Za-z0-9.\-+]{0,31}$")
+
+# Report-visible free text: printable, single line, no control characters, and
+# no Markdown table delimiters. Rendering escapes as well - this is defence in
+# depth, not a substitute for it.
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+# ---------------------------------------------------------------------- bounds
+
+SCORE_MIN, SCORE_MAX = 0.0, 1.0
+DISTANCE_MIN_CM, DISTANCE_MAX_CM = 10, 500
+MAX_FRAMES_ABSOLUTE = 100_000
+TIMEOUT_MIN_S, TIMEOUT_MAX_S = 0.1, 600.0
+TEXT_MAX_LEN = 200
+NOTES_MAX_LEN = 500
+
+DERIVED_TOLERANCE = 1e-6
+CONTINUITY_TOLERANCE = 1e-3
+# Boundary comparisons are done on values that survived a JSON round trip, so an
+# exact == would be brittle. This tolerance decides "reaches the threshold".
+BOUNDARY_TOLERANCE = 1e-9
 
 
 class ManifestError(Exception):
@@ -102,155 +140,295 @@ class ManifestError(Exception):
         super().__init__(f"{len(findings)} validation finding(s)")
 
 
+# ------------------------------------------------------------------- helpers
+
+
 def _is_finite_number(value: Any) -> bool:
-    """bool is a subclass of int in Python; a flag is not a measurement."""
+    """bool subclasses int in Python; a flag is not a measurement."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _scan_prohibited_keys(node: Any, path: str, findings: list[str]) -> None:
-    """Recursive key scan at every nesting depth (schema §Prohibited fields)."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if isinstance(key, str) and key.strip().lower() in PROHIBITED_KEYS:
-                findings.append(
-                    f"{path}.{key}: prohibited field - the schema forbids "
-                    f"identifying or media fields at any nesting level"
-                )
-            _scan_prohibited_keys(value, f"{path}.{key}", findings)
-    elif isinstance(node, list):
-        for index, item in enumerate(node):
-            _scan_prohibited_keys(item, f"{path}[{index}]", findings)
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_keys(node: Any, allowed: frozenset[str], path: str, findings: list[str]) -> bool:
+    """Exact key set. Unknown keys fail; a whitelist cannot be out-guessed."""
+    if not isinstance(node, dict):
+        findings.append(f"{path}: must be an object")
+        return False
+    unknown = sorted(set(node) - allowed)
+    if unknown:
+        findings.append(
+            f"{path}: unknown field(s) {unknown} - this schema is a whitelist, and "
+            f"an unrecognised field may carry identifying data"
+        )
+    missing = sorted(allowed - set(node))
+    if missing:
+        findings.append(f"{path}: required field(s) missing {missing}")
+    return not unknown and not missing
+
+
+def _check_text(value: Any, path: str, findings: list[str], *, max_len: int = TEXT_MAX_LEN,
+                allow_empty: bool = False) -> None:
+    """Report-visible text: printable, single-line, bounded, no table delimiters."""
+    if not isinstance(value, str):
+        findings.append(f"{path}: must be a string")
+        return
+    if not allow_empty and not value.strip():
+        findings.append(f"{path}: must be a non-empty string")
+        return
+    if len(value) > max_len:
+        findings.append(f"{path}: exceeds {max_len} characters")
+    if CONTROL_CHARS_RE.search(value):
+        findings.append(f"{path}: contains control characters")
+    if "\n" in value or "\r" in value:
+        findings.append(f"{path}: must be a single line")
+    if "|" in value:
+        findings.append(f"{path}: must not contain '|', which delimits Markdown tables")
+
+
+# -------------------------------------------------------------- provenance
+
+
+def _validate_liveness_config(config: Any, findings: list[str]) -> None:
+    path = "provenance.liveness_config"
+    if not _check_keys(config, CONFIG_KEYS, path, findings) and not isinstance(config, dict):
+        return
+
+    high, low = config.get("blink_score_high"), config.get("blink_score_low")
+    for key, value in (("blink_score_high", high), ("blink_score_low", low)):
+        if not _is_finite_number(value):
+            findings.append(f"{path}.{key}: must be a finite number")
+        elif not SCORE_MIN <= float(value) <= SCORE_MAX:
+            findings.append(f"{path}.{key}: {value} is outside the 0..1 score range")
+    if _is_finite_number(high) and _is_finite_number(low) and float(low) > float(high):
+        findings.append(
+            f"{path}: blink_score_low ({low}) exceeds blink_score_high ({high}); "
+            f"the pair can never both be satisfied"
+        )
+
+    continuity = config.get("min_face_continuity")
+    if not _is_finite_number(continuity) or not 0.0 < float(continuity) <= 1.0:
+        findings.append(f"{path}.min_face_continuity: must be a number in (0, 1]")
+
+    timeout = config.get("challenge_timeout_seconds")
+    if not _is_finite_number(timeout):
+        findings.append(f"{path}.challenge_timeout_seconds: must be a finite number")
+    elif not TIMEOUT_MIN_S <= float(timeout) <= TIMEOUT_MAX_S:
+        findings.append(
+            f"{path}.challenge_timeout_seconds: {timeout} is outside "
+            f"{TIMEOUT_MIN_S}..{TIMEOUT_MAX_S} seconds"
+        )
+
+    frames = config.get("max_frames_per_challenge")
+    if not _is_int(frames):
+        findings.append(f"{path}.max_frames_per_challenge: must be an integer")
+    elif not 1 <= frames <= MAX_FRAMES_ABSOLUTE:
+        findings.append(
+            f"{path}.max_frames_per_challenge: {frames} is outside 1..{MAX_FRAMES_ABSOLUTE}"
+        )
+
+    # This analyser models the BLINK decision only. A manifest recorded with any
+    # other challenge enabled would need different outcome verification, so it
+    # is refused rather than analysed under the wrong model.
+    challenges = config.get("enabled_challenges")
+    if challenges != ["BLINK"]:
+        findings.append(
+            f"{path}.enabled_challenges: must be exactly ['BLINK'] for this "
+            f"analyser, got {challenges!r}"
+        )
 
 
 def _validate_provenance(provenance: Any, findings: list[str]) -> None:
     path = "provenance"
-    if not isinstance(provenance, dict):
-        findings.append(f"{path}: must be an object")
+    if not _check_keys(provenance, PROVENANCE_KEYS, path, findings) and not isinstance(provenance, dict):
         return
-    for key in REQUIRED_PROVENANCE_KEYS:
-        if key not in provenance:
-            findings.append(f"{path}.{key}: required field is missing")
 
     commit = provenance.get("faceauth_commit")
-    if commit is not None and not (isinstance(commit, str) and COMMIT_RE.match(commit)):
-        findings.append(f"{path}.faceauth_commit: must be a 40-character hex commit SHA")
+    if not (isinstance(commit, str) and COMMIT_RE.match(commit)):
+        findings.append(f"{path}.faceauth_commit: must be a 40-character lowercase hex SHA")
 
     digest = provenance.get("face_landmarker_sha256")
-    if digest is not None and not (isinstance(digest, str) and SHA256_RE.match(digest)):
-        findings.append(f"{path}.face_landmarker_sha256: must be a 64-character hex SHA-256")
+    if not (isinstance(digest, str) and SHA256_RE.match(digest)):
+        findings.append(f"{path}.face_landmarker_sha256: must be a 64-character lowercase hex SHA-256")
+
+    version = provenance.get("python_version")
+    if not (isinstance(version, str) and PYTHON_VERSION_RE.match(version)):
+        findings.append(f"{path}.python_version: must look like '3.12' or '3.12.0'")
+
+    resolution = provenance.get("camera_resolution")
+    if not (isinstance(resolution, str) and RESOLUTION_RE.match(resolution)):
+        findings.append(f"{path}.camera_resolution: must look like '1280x720'")
+
+    _check_text(provenance.get("camera_label"), f"{path}.camera_label", findings)
+    _check_text(provenance.get("os_build"), f"{path}.os_build", findings)
 
     deps = provenance.get("pinned_dependencies")
-    if deps is not None and not (
-        isinstance(deps, dict)
-        and deps
-        and all(isinstance(k, str) and isinstance(v, str) for k, v in deps.items())
-    ):
+    if not isinstance(deps, dict) or not deps:
         findings.append(f"{path}.pinned_dependencies: must be a non-empty name->version map")
+    else:
+        for name, pinned in sorted(deps.items()):
+            if not (isinstance(name, str) and DEP_NAME_RE.match(name)):
+                findings.append(f"{path}.pinned_dependencies: {name!r} is not a valid package name")
+            if not (isinstance(pinned, str) and DEP_VERSION_RE.match(pinned)):
+                findings.append(
+                    f"{path}.pinned_dependencies[{name!r}]: {pinned!r} is not an exact pinned version"
+                )
 
-    config = provenance.get("liveness_config")
-    if config is None:
-        return
-    if not isinstance(config, dict):
-        findings.append(f"{path}.liveness_config: must be an object")
-        return
+    _validate_liveness_config(provenance.get("liveness_config"), findings)
 
-    for key in REQUIRED_CONFIG_KEYS:
-        if key not in config:
-            findings.append(f"{path}.liveness_config.{key}: required field is missing")
 
-    # Thresholds must be explicit and internally consistent. The analysis reads
-    # them from here rather than assuming, so a wrong pair must not pass.
-    high, low = config.get("blink_score_high"), config.get("blink_score_low")
-    for key, value in (("blink_score_high", high), ("blink_score_low", low)):
-        if value is None:
-            continue
-        if not _is_finite_number(value):
-            findings.append(f"{path}.liveness_config.{key}: must be a finite number")
-        elif not SCORE_MIN <= float(value) <= SCORE_MAX:
-            findings.append(
-                f"{path}.liveness_config.{key}: {value} is outside the 0..1 score range"
-            )
-    if _is_finite_number(high) and _is_finite_number(low) and float(low) > float(high):
-        findings.append(
-            f"{path}.liveness_config: blink_score_low ({low}) exceeds "
-            f"blink_score_high ({high}); the pair cannot both be satisfied"
-        )
-
-    continuity = config.get("min_face_continuity")
-    if continuity is not None and not (
-        _is_finite_number(continuity) and 0.0 < float(continuity) <= 1.0
-    ):
-        findings.append(f"{path}.liveness_config.min_face_continuity: must be in (0, 1]")
-
-    challenges = config.get("enabled_challenges")
-    if challenges is not None and not (
-        isinstance(challenges, list) and challenges
-        and all(isinstance(c, str) for c in challenges)
-    ):
-        findings.append(f"{path}.liveness_config.enabled_challenges: must be a non-empty list")
+# ------------------------------------------------------------------ trials
 
 
 def _validate_condition(condition: Any, path: str, findings: list[str]) -> None:
-    if not isinstance(condition, dict):
-        findings.append(f"{path}: must be an object")
+    if not _check_keys(condition, CONDITION_KEYS, path, findings) and not isinstance(condition, dict):
         return
-    for key in REQUIRED_CONDITION_KEYS:
-        if key not in condition:
-            findings.append(f"{path}.{key}: required field is missing")
-
-    for key, allowed in (
-        ("lighting", LIGHTING), ("head_pose", HEAD_POSE), ("eyewear", EYEWEAR)
-    ):
-        value = condition.get(key)
-        if value is not None and value not in allowed:
-            findings.append(f"{path}.{key}: {value!r} is not one of {list(allowed)}")
-
+    for key, allowed in (("lighting", LIGHTING), ("head_pose", HEAD_POSE), ("eyewear", EYEWEAR)):
+        if condition.get(key) not in allowed:
+            findings.append(f"{path}.{key}: {condition.get(key)!r} is not one of {list(allowed)}")
     distance = condition.get("distance_cm")
-    if distance is not None:
-        if not _is_finite_number(distance):
-            findings.append(f"{path}.distance_cm: must be a finite number")
-        elif not DISTANCE_MIN_CM <= float(distance) <= DISTANCE_MAX_CM:
+    if not _is_int(distance):
+        findings.append(f"{path}.distance_cm: must be an integer")
+    elif not DISTANCE_MIN_CM <= distance <= DISTANCE_MAX_CM:
+        findings.append(
+            f"{path}.distance_cm: {distance} is outside {DISTANCE_MIN_CM}..{DISTANCE_MAX_CM} cm"
+        )
+
+
+def _expected_self_report(intended_type: str) -> str:
+    if intended_type in GENUINE_BLINK_TYPES:
+        return "blinked"
+    if intended_type in GENUINE_NON_BLINK_TYPES:
+        return "did_not_blink"
+    return "n/a"
+
+
+def _verify_outcome(trial: dict, config: dict, path: str, findings: list[str]) -> None:
+    """Recompute the attempt outcome from the manifest and shipping behaviour.
+
+    ``attempt_outcome`` is an editable field. Trusting it would let a manifest
+    assert any FAR or FRR the author wanted, so every fact recomputable from the
+    record is recomputed and cross-checked.
+    """
+    scores = trial.get("blink_scores")
+    high, low = config.get("blink_score_high"), config.get("blink_score_low")
+    min_continuity = config.get("min_face_continuity")
+    captured, with_face = trial.get("frames_captured"), trial.get("frames_with_face")
+    outcome, reason = trial.get("attempt_outcome"), trial.get("outcome_reason")
+
+    if not (
+        isinstance(scores, list)
+        and all(_is_finite_number(s) for s in scores)
+        and _is_finite_number(high) and _is_finite_number(low)
+        and _is_finite_number(min_continuity)
+        and _is_int(captured) and _is_int(with_face) and captured > 0
+    ):
+        return  # a prior finding already covers the malformed input
+
+    if not scores:
+        if outcome != "rejected" or reason != "no_face_observed_during_challenge":
             findings.append(
-                f"{path}.distance_cm: {distance} is outside "
-                f"{DISTANCE_MIN_CM}..{DISTANCE_MAX_CM} cm"
+                f"{path}: an empty observation series can only produce "
+                f"rejected/'no_face_observed_during_challenge', got "
+                f"{outcome!r}/{reason!r}"
             )
-
-
-def _validate_trial(trial: Any, index: int, findings: list[str]) -> None:
-    path = f"trials[{index}]"
-    if not isinstance(trial, dict):
-        findings.append(f"{path}: must be an object")
         return
 
-    for key in REQUIRED_TRIAL_KEYS:
-        if key not in trial:
-            findings.append(f"{path}.{key}: required field is missing")
+    values = [float(s) for s in scores]
+    decision = (
+        max(values) >= float(high) - BOUNDARY_TOLERANCE
+        and min(values) <= float(low) + BOUNDARY_TOLERANCE
+    )
+    continuity = with_face / captured
+    override = (
+        decision
+        and captured >= MIN_FRAMES_FOR_CONTINUITY_CHECK
+        and continuity < float(min_continuity)
+    )
+    passed = decision and not override
+    expected_outcome = "accepted" if passed else "rejected"
+    expected_reason = (
+        "blink_detected" if passed
+        else "face_detection_unstable" if override
+        else "no_transient_blink_detected"
+    )
 
-    trial_index = trial.get("trial_index")
-    if not (isinstance(trial_index, int) and not isinstance(trial_index, bool) and trial_index >= 0):
+    if outcome != expected_outcome:
+        findings.append(
+            f"{path}.attempt_outcome: recorded {outcome!r} but max={max(values):.6f}, "
+            f"min={min(values):.6f} against high={high}/low={low} with continuity "
+            f"{continuity:.4f} implies {expected_outcome!r}"
+        )
+    if reason != expected_reason:
+        findings.append(
+            f"{path}.outcome_reason: recorded {reason!r} but the recomputed decision "
+            f"implies {expected_reason!r}"
+        )
+
+
+def _validate_trial(trial: Any, index: int, config: dict, findings: list[str]) -> None:
+    path = f"trials[{index}]"
+    if not _check_keys(trial, TRIAL_KEYS, path, findings) and not isinstance(trial, dict):
+        return
+
+    if not _is_int(trial.get("trial_index")) or trial.get("trial_index") < 0:
         findings.append(f"{path}.trial_index: must be a non-negative integer")
 
-    if trial.get("intended_type") not in TRIAL_TYPES:
-        findings.append(
-            f"{path}.intended_type: {trial.get('intended_type')!r} is not one of {list(TRIAL_TYPES)}"
-        )
+    intended = trial.get("intended_type")
+    if intended not in TRIAL_TYPES:
+        findings.append(f"{path}.intended_type: {intended!r} is not one of {list(TRIAL_TYPES)}")
 
     _validate_condition(trial.get("condition"), f"{path}.condition", findings)
 
-    # --- score series -------------------------------------------------------
+    valid = trial.get("valid")
+    reason = trial.get("exclusion_reason")
+    if not isinstance(valid, bool):
+        findings.append(f"{path}.valid: must be a boolean")
+    elif valid and reason is not None:
+        findings.append(f"{path}: valid is true but exclusion_reason is {reason!r}")
+    elif not valid and reason is None:
+        findings.append(f"{path}: valid is false but exclusion_reason is null")
+    if reason is not None and reason not in EXCLUSION_REASONS:
+        findings.append(f"{path}.exclusion_reason: {reason!r} is not one of {list(EXCLUSION_REASONS)}")
+
+    # --- observation series -------------------------------------------------
     scores = trial.get("blink_scores")
     scores_ok = False
-    if not isinstance(scores, list) or not scores:
-        findings.append(f"{path}.blink_scores: must be a non-empty array")
+    if not isinstance(scores, list):
+        findings.append(f"{path}.blink_scores: must be an array")
     elif not all(_is_finite_number(s) for s in scores):
-        findings.append(
-            f"{path}.blink_scores: contains a non-finite or non-numeric value "
-            f"(NaN and Infinity are rejected)"
-        )
+        findings.append(f"{path}.blink_scores: contains a non-finite or non-numeric value")
     elif not all(SCORE_MIN <= float(s) <= SCORE_MAX for s in scores):
         findings.append(f"{path}.blink_scores: a value is outside the 0..1 score range")
+    elif not scores:
+        # Zero observations is honest only for the reasons that mean "nothing
+        # was ever measured". Everything else must carry its series.
+        if valid is not False or reason not in EMPTY_OBSERVATION_REASONS:
+            findings.append(
+                f"{path}.blink_scores: an empty series is only permitted for an "
+                f"excluded trial with reason in {list(EMPTY_OBSERVATION_REASONS)}, "
+                f"not valid={valid!r} reason={reason!r}"
+            )
+        else:
+            scores_ok = True
     else:
         scores_ok = True
+
+    # --- derived values, recomputed not trusted -----------------------------
+    if scores_ok and scores:
+        values = [float(s) for s in scores]
+        for key, expected in (("max_blink_score", max(values)), ("min_blink_score", min(values))):
+            stated = trial.get(key)
+            if not _is_finite_number(stated):
+                findings.append(f"{path}.{key}: must be a finite number")
+            elif abs(float(stated) - expected) > DERIVED_TOLERANCE:
+                findings.append(f"{path}.{key}: stated {stated} but the series gives {expected:.6f}")
+    elif scores_ok and not scores:
+        for key in ("max_blink_score", "min_blink_score"):
+            if trial.get(key) is not None:
+                findings.append(f"{path}.{key}: must be null when there are no observations")
 
     turn_ratios = trial.get("turn_ratios")
     if turn_ratios is not None:
@@ -259,24 +437,11 @@ def _validate_trial(trial: Any, index: int, findings: list[str]) -> None:
         elif not all(_is_finite_number(t) for t in turn_ratios):
             findings.append(f"{path}.turn_ratios: contains a non-finite or non-numeric value")
 
-    # --- derived values, recomputed not trusted -----------------------------
-    if scores_ok:
-        values = [float(s) for s in scores]
-        for key, expected in (("max_blink_score", max(values)), ("min_blink_score", min(values))):
-            stated = trial.get(key)
-            if not _is_finite_number(stated):
-                findings.append(f"{path}.{key}: must be a finite number")
-            elif abs(float(stated) - expected) > DERIVED_TOLERANCE:
-                findings.append(
-                    f"{path}.{key}: stated {stated} but blink_scores gives {expected:.6f}"
-                )
-
-    # --- frames and continuity ---------------------------------------------
-    captured = trial.get("frames_captured")
-    with_face = trial.get("frames_with_face")
+    # --- frames -------------------------------------------------------------
+    captured, with_face = trial.get("frames_captured"), trial.get("frames_with_face")
     frames_ok = True
     for key, value in (("frames_captured", captured), ("frames_with_face", with_face)):
-        if not (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+        if not _is_int(value) or value < 0:
             findings.append(f"{path}.{key}: must be a non-negative integer")
             frames_ok = False
         elif value > MAX_FRAMES_ABSOLUTE:
@@ -295,120 +460,143 @@ def _validate_trial(trial: Any, index: int, findings: list[str]) -> None:
             stated = trial.get("face_continuity")
             if not _is_finite_number(stated):
                 findings.append(f"{path}.face_continuity: must be a finite number")
-            elif abs(float(stated) - expected_continuity) > 1e-3:
+            elif abs(float(stated) - expected_continuity) > CONTINUITY_TOLERANCE:
                 findings.append(
-                    f"{path}.face_continuity: stated {stated} but "
-                    f"{with_face}/{captured} gives {expected_continuity:.6f}"
+                    f"{path}.face_continuity: stated {stated} but {with_face}/{captured} "
+                    f"gives {expected_continuity:.6f}"
+                )
+            # observe() records at most one score per frame that had a face.
+            if isinstance(scores, list) and len(scores) > with_face:
+                findings.append(
+                    f"{path}: {len(scores)} observations exceed frames_with_face "
+                    f"{with_face}; the pipeline records at most one score per "
+                    f"frame in which a face was detected"
+                )
+            if reason == "no_face_detected" and with_face != 0:
+                findings.append(
+                    f"{path}: exclusion_reason 'no_face_detected' but frames_with_face "
+                    f"is {with_face}, not 0"
                 )
 
-    # --- enums --------------------------------------------------------------
-    for key, allowed in (
-        ("attempt_outcome", ATTEMPT_OUTCOMES),
-        ("ground_truth", GROUND_TRUTHS),
-        ("self_report", SELF_REPORTS),
-    ):
-        if trial.get(key) not in allowed:
-            findings.append(f"{path}.{key}: {trial.get(key)!r} is not one of {list(allowed)}")
-
-    for key in ("outcome_reason", "label_source"):
-        value = trial.get(key)
-        if not isinstance(value, str) or not value.strip():
-            findings.append(f"{path}.{key}: must be a non-empty string")
-
-    notes = trial.get("notes")
-    if notes is not None and not isinstance(notes, str):
-        findings.append(f"{path}.notes: must be a string or absent")
-
-    # --- validity / exclusion consistency -----------------------------------
-    valid = trial.get("valid")
-    reason = trial.get("exclusion_reason")
-    if not isinstance(valid, bool):
-        findings.append(f"{path}.valid: must be a boolean")
-    elif valid and reason is not None:
+    # --- enums and text -----------------------------------------------------
+    if trial.get("attempt_outcome") not in ATTEMPT_OUTCOMES:
+        findings.append(f"{path}.attempt_outcome: {trial.get('attempt_outcome')!r} is not one of {list(ATTEMPT_OUTCOMES)}")
+    if trial.get("outcome_reason") not in OUTCOME_REASONS:
         findings.append(
-            f"{path}: valid is true but exclusion_reason is {reason!r}; "
-            f"the schema requires valid == false <-> exclusion_reason != null"
+            f"{path}.outcome_reason: {trial.get('outcome_reason')!r} is not one of "
+            f"{list(OUTCOME_REASONS)} - the shipping BLINK path produces no other reason"
         )
-    elif not valid and reason is None:
-        findings.append(
-            f"{path}: valid is false but exclusion_reason is null; "
-            f"an excluded trial must say why"
-        )
-    if reason is not None and reason not in EXCLUSION_REASONS:
-        findings.append(f"{path}.exclusion_reason: {reason!r} is not one of {list(EXCLUSION_REASONS)}")
+    if trial.get("ground_truth") not in GROUND_TRUTHS:
+        findings.append(f"{path}.ground_truth: {trial.get('ground_truth')!r} is not one of {list(GROUND_TRUTHS)}")
+    if trial.get("self_report") not in SELF_REPORTS:
+        findings.append(f"{path}.self_report: {trial.get('self_report')!r} is not one of {list(SELF_REPORTS)}")
+    if trial.get("label_source") not in LABEL_SOURCES:
+        findings.append(f"{path}.label_source: {trial.get('label_source')!r} is not one of {list(LABEL_SOURCES)}")
+    _check_text(trial.get("notes"), f"{path}.notes", findings,
+                max_len=NOTES_MAX_LEN, allow_empty=True)
 
-    # --- ground truth consistency (schema invariant) ------------------------
-    intended = trial.get("intended_type")
-    truth = trial.get("ground_truth")
-    if intended in TRIAL_TYPES and truth in GROUND_TRUTHS:
+    # --- ground truth and self-report ---------------------------------------
+    if intended in TRIAL_TYPES:
         expected_truth = (
             "blink" if intended in GENUINE_BLINK_TYPES
             else "no_blink" if intended in GENUINE_NON_BLINK_TYPES
             else "spoof"
         )
-        if truth != expected_truth:
+        if trial.get("ground_truth") != expected_truth:
             findings.append(
-                f"{path}.ground_truth: {truth!r} contradicts intended_type "
-                f"{intended!r}, which implies {expected_truth!r}"
+                f"{path}.ground_truth: {trial.get('ground_truth')!r} contradicts "
+                f"intended_type {intended!r}, which implies {expected_truth!r}"
             )
+        expected_report = _expected_self_report(intended)
+        actual_report = trial.get("self_report")
+        if valid is True and actual_report != expected_report:
+            findings.append(
+                f"{path}.self_report: a VALID {intended} trial requires "
+                f"{expected_report!r}; {actual_report!r} is a ground-truth "
+                f"disagreement and must be excluded as 'ambiguous_ground_truth'"
+            )
+        if valid is False and actual_report != expected_report and reason != "ambiguous_ground_truth":
+            findings.append(
+                f"{path}: self_report {actual_report!r} disagrees with intended_type "
+                f"{intended!r}, so exclusion_reason must be 'ambiguous_ground_truth', "
+                f"not {reason!r}"
+            )
+
+    # --- outcome verification (valid trials only) ---------------------------
+    if valid is True and isinstance(config, dict):
+        _verify_outcome(trial, config, path, findings)
 
 
 def _validate_retries(trials: list[dict], findings: list[str]) -> None:
-    """Retry references must resolve, not self-reference, and not form cycles.
+    """Retry invariants (plan §7.3): one retry, of an excluded original, same cell, after it."""
+    by_index: dict[int, dict] = {
+        t["trial_index"]: t for t in trials if _is_int(t.get("trial_index"))
+    }
+    retried: dict[int, list[int]] = {}
 
-    The protocol allows at most one retry per cell (plan §7.3), so a chain of
-    retries is itself a finding even when it is acyclic.
-    """
-    by_index: dict[int, dict] = {}
-    for trial in trials:
-        index = trial.get("trial_index")
-        if isinstance(index, int) and not isinstance(index, bool):
-            by_index[index] = trial
-
-    retried_targets: dict[int, list[int]] = {}
     for trial in trials:
         source = trial.get("trial_index")
         target = trial.get("retry_of_trial_index")
         if target is None:
             continue
         path = f"trial {source}"
-        if not (isinstance(target, int) and not isinstance(target, bool)):
+        if not _is_int(target):
             findings.append(f"{path}.retry_of_trial_index: must be an integer or null")
             continue
         if target == source:
             findings.append(f"{path}.retry_of_trial_index: a trial cannot be a retry of itself")
             continue
-        if target not in by_index:
-            findings.append(
-                f"{path}.retry_of_trial_index: {target} does not match any trial_index"
-            )
+        original = by_index.get(target)
+        if original is None:
+            findings.append(f"{path}.retry_of_trial_index: {target} matches no trial_index")
             continue
-        if by_index[target].get("retry_of_trial_index") is not None:
+        if original.get("valid") is not False:
             findings.append(
-                f"{path}.retry_of_trial_index: trial {target} is itself a retry; the "
-                f"protocol allows at most one retry per cell"
+                f"{path}.retry_of_trial_index: trial {target} is VALID; only an "
+                f"excluded trial may be retried, otherwise the same cell is counted twice"
             )
-        if isinstance(source, int):
-            retried_targets.setdefault(target, []).append(source)
+        if original.get("retry_of_trial_index") is not None:
+            findings.append(
+                f"{path}.retry_of_trial_index: trial {target} is itself a retry; "
+                f"at most one retry per cell"
+            )
+        if original.get("intended_type") != trial.get("intended_type"):
+            findings.append(
+                f"{path}.retry_of_trial_index: intended_type {trial.get('intended_type')!r} "
+                f"differs from the original's {original.get('intended_type')!r}; a retry "
+                f"must re-run the same cell"
+            )
+        if original.get("condition") != trial.get("condition"):
+            findings.append(
+                f"{path}.retry_of_trial_index: condition differs from the original's; "
+                f"a retry must re-run the same condition cell"
+            )
+        if _is_int(source) and source <= target:
+            findings.append(
+                f"{path}.retry_of_trial_index: a retry must occur after the trial it "
+                f"repeats (index {source} <= {target})"
+            )
+        if _is_int(source):
+            retried.setdefault(target, []).append(source)
 
-    for target, sources in sorted(retried_targets.items()):
+    for target, sources in sorted(retried.items()):
         if len(sources) > 1:
             findings.append(
                 f"trial {target}: retried by {sorted(sources)} - at most one retry per cell"
             )
 
-    # Cycle detection over the retry graph, independent of the checks above.
-    for trial in trials:
+    for trial in trials:                       # independent cycle detection
         seen: set[int] = set()
         node = trial.get("trial_index")
-        while isinstance(node, int) and node in by_index:
+        while _is_int(node) and node in by_index:
             if node in seen:
-                findings.append(
-                    f"trial {trial.get('trial_index')}: retry_of_trial_index forms a cycle"
-                )
+                findings.append(f"trial {trial.get('trial_index')}: retry chain forms a cycle")
                 break
             seen.add(node)
             node = by_index[node].get("retry_of_trial_index")
+
+
+# ------------------------------------------------------------------- session
 
 
 def validate_session(session: Any) -> list[str]:
@@ -418,53 +606,62 @@ def validate_session(session: Any) -> list[str]:
     if not isinstance(session, dict):
         return ["session: top level must be a JSON object"]
 
-    for key in REQUIRED_SESSION_KEYS:
-        if key not in session:
-            findings.append(f"session.{key}: required field is missing")
+    _check_keys(session, SESSION_KEYS, "session", findings)
+
+    classification = session.get("data_classification")
+    if classification != REQUIRED_DATA_CLASSIFICATION:
+        findings.append(
+            f"session.data_classification: must be {REQUIRED_DATA_CLASSIFICATION!r}, got "
+            f"{classification!r}. Stage 0 tooling processes synthetic manifests only; "
+            f"handling real Stage 1/2 data requires a separate, owner-authorized, "
+            f"reviewed change."
+        )
 
     participant = session.get("participant_id")
     if not (isinstance(participant, str) and PARTICIPANT_ID_RE.match(participant)):
         findings.append(
-            f"session.participant_id: {participant!r} must be a pseudonym like 'P01' - "
-            f"a name or any other identifier is prohibited"
+            f"session.participant_id: {participant!r} must be a pseudonym like 'P01'"
         )
     session_id = session.get("session_id")
     if not (isinstance(session_id, str) and SESSION_ID_RE.match(session_id)):
         findings.append(f"session.session_id: {session_id!r} must be a pseudonym like 'S01'")
 
     date = session.get("date")
-    if not (isinstance(date, str) and DATE_RE.match(date)):
-        findings.append("session.date: must be an ISO date, YYYY-MM-DD")
+    if not isinstance(date, str):
+        findings.append("session.date: must be a string")
+    else:
+        try:
+            parsed = _datetime.date.fromisoformat(date)
+        except ValueError:
+            findings.append(f"session.date: {date!r} is not a real calendar date (YYYY-MM-DD)")
+        else:
+            if not 2000 <= parsed.year <= 2100:
+                findings.append(f"session.date: year {parsed.year} is implausible")
 
-    operator = session.get("operator_role")
-    if not (isinstance(operator, str) and operator.strip()):
-        findings.append("session.operator_role: must be a non-empty role string")
+    _check_text(session.get("operator_role"), "session.operator_role", findings)
 
-    seed = session.get("randomisation_seed")
-    if not (isinstance(seed, int) and not isinstance(seed, bool)):
+    if not _is_int(session.get("randomisation_seed")):
         findings.append("session.randomisation_seed: must be an integer, recorded for repeatability")
 
     _validate_provenance(session.get("provenance"), findings)
-    _scan_prohibited_keys(session, "session", findings)
 
     trials = session.get("trials")
     if not isinstance(trials, list) or not trials:
         findings.append("session.trials: must be a non-empty array")
         return findings
 
+    provenance = session.get("provenance")
+    config = provenance.get("liveness_config") if isinstance(provenance, dict) else None
     for index, trial in enumerate(trials):
-        _validate_trial(trial, index, findings)
+        _validate_trial(trial, index, config if isinstance(config, dict) else {}, findings)
 
-    indices = [
-        t.get("trial_index") for t in trials
-        if isinstance(t, dict) and isinstance(t.get("trial_index"), int)
-        and not isinstance(t.get("trial_index"), bool)
-    ]
+    dict_trials = [t for t in trials if isinstance(t, dict)]
+    indices = [t.get("trial_index") for t in dict_trials if _is_int(t.get("trial_index"))]
     duplicates = sorted({i for i in indices if indices.count(i) > 1})
     if duplicates:
         findings.append(f"session.trials: duplicate trial_index values {duplicates}")
 
-    _validate_retries([t for t in trials if isinstance(t, dict)], findings)
+    _validate_retries(dict_trials, findings)
     return findings
 
 

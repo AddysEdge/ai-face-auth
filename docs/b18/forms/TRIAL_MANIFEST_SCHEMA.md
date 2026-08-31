@@ -7,15 +7,25 @@
 One JSON object per session. Field names are normative — the analysis script
 depends on them.
 
+**The schema is a whitelist.** Every object has an exact allowed key set, and an
+unknown field is a hard validation failure. A blacklist of forbidden names is a
+guess about what a leak will be called; a whitelist cannot be out-guessed.
+
+**`data_classification` is mandatory.** The Stage 0 tooling processes
+`"synthetic_stage0"` and nothing else, so it cannot consume a real participant
+manifest and emit a report describing the data as synthetic. Handling Stage 1 or
+Stage 2 manifests requires a separate, owner-authorized, reviewed change.
+
 ## Session object
 
 ```jsonc
 {
   "session_id": "S01",
   "participant_id": "P01",           // pseudonym only; never a name
-  "date": "YYYY-MM-DD",
+  "date": "YYYY-MM-DD",              // a real calendar date
   "operator_role": "repository owner",
   "randomisation_seed": 123456,
+  "data_classification": "synthetic_stage0",   // REQUIRED; Stage 0 accepts only this
 
   "provenance": {                    // plan §11.4 - safe to publish
     "faceauth_commit": "<40-hex>",
@@ -77,6 +87,15 @@ depends on them.
 }
 ```
 
+## Empty observation series
+
+A trial the detector never saw a face in has nothing to record. Fabricating a
+score series to satisfy a validator would be inventing measurements, so
+`blink_scores` **may be empty** — with `max_blink_score` and `min_blink_score`
+both `null` — for an excluded trial whose reason is `no_face_detected` or
+`software_error`. `no_face_detected` additionally requires `frames_with_face: 0`.
+Every other trial must carry its series.
+
 ## Invariants the analysis must enforce
 
 - `attempted == valid + excluded`; both reported (plan §9.2).
@@ -87,8 +106,20 @@ depends on them.
 - `attempt_outcome` is the post-continuity result, not `decide_blink` alone.
 - `ground_truth` was never derived from any model output.
 - A trial whose `intended_type` disagrees with `self_report` is
-  `ambiguous_ground_truth` and excluded.
-- No field anywhere contains a name, contact detail, serial number, or image.
+  `ambiguous_ground_truth` and excluded. A **valid** genuine-blink trial requires
+  `self_report: "blinked"`, a valid genuine non-blink trial requires
+  `"did_not_blink"`, and a valid spoof trial requires `"n/a"`.
+- `attempt_outcome` and `outcome_reason` are **recomputed** from the observation
+  series, the frame counts and the shipping decision rule
+  (`max >= high` and `min <= low`, both inclusive, then the
+  `min_face_continuity` override). A recorded outcome that contradicts the
+  recomputation is rejected — an editable outcome field would otherwise let a
+  manifest assert any FAR or FRR its author wanted.
+- A retry may reference only an **excluded** original, must repeat the same
+  `intended_type` and the same `condition` cell, must occur after it, and there
+  may be at most one. Chains, cycles and cross-cell retries are rejected.
+- No field anywhere contains a name, contact detail, serial number, or image —
+  enforced by the whitelist, not by a list of forbidden names.
 
 ## Prohibited fields
 

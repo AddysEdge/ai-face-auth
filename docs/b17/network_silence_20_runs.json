@@ -1,8 +1,8 @@
 {
  "what": "20 fresh-process FULL-mode runs of scripts/check_network_activity.py with an empty scripts/network_allowlist.json",
  "why": "acceptance criterion B17: the verification path must make no outbound network connections",
- "generated": "2026-08-31T00:20:21+00:00",
- "commit": "45cfca1e77b2fe7f856a2e0836c385f9a09f4a62",
+ "generated": "2026-08-31T00:38:51+00:00",
+ "commit": "8c4f089dfd12113d7992449b12babf0ca2ed7923",
  "platform": "Windows 11 (AMD64)",
  "python": "3.12.13",
  "environment": "clean venv built from the pinned dependency set; mediapipe absent from site-packages entirely, ai-edge-litert==2.2.0 present",
@@ -22,11 +22,11 @@
  "total_external_endpoints_across_all_runs": 0,
  "successful_polls_range": [
   8,
-  11
+  10
  ],
  "seconds_per_run_range": [
-  11.2,
-  12.5
+  11.3,
+  13.0
  ],
  "limitations": [
   "This is a detector, not a proof of absence: a connection shorter than the poll interval could be missed. The canary proves the observer was working, not that nothing could ever escape it.",
@@ -46,7 +46,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.6,
+   "seconds": 11.3,
    "ok": true
   },
   {
@@ -54,14 +54,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 10,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.2,
+   "seconds": 12.7,
    "ok": true
   },
   {
@@ -69,14 +69,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 8,
+   "successful_polls": 10,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.5,
+   "seconds": 11.9,
    "ok": true
   },
   {
@@ -91,7 +91,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 12.1,
+   "seconds": 12.7,
    "ok": true
   },
   {
@@ -106,7 +106,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.5,
+   "seconds": 11.8,
    "ok": true
   },
   {
@@ -121,7 +121,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.3,
+   "seconds": 12.0,
    "ok": true
   },
   {
@@ -129,7 +129,7 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
@@ -144,14 +144,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 10,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.9,
+   "seconds": 13.0,
    "ok": true
   },
   {
@@ -166,7 +166,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 12.5,
+   "seconds": 12.0,
    "ok": true
   },
   {
@@ -181,7 +181,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 12.0,
+   "seconds": 11.7,
    "ok": true
   },
   {
@@ -196,7 +196,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.9,
+   "seconds": 12.2,
    "ok": true
   },
   {
@@ -211,7 +211,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.4,
+   "seconds": 11.8,
    "ok": true
   },
   {
@@ -219,14 +219,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 9,
+   "successful_polls": 8,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 12.2,
+   "seconds": 11.9,
    "ok": true
   },
   {
@@ -234,21 +234,6 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
-   "failed_polls": [],
-   "probe_timed_out": false,
-   "command_deadline_expired": false,
-   "external_observed_count": 0,
-   "external": [],
-   "undeclared": [],
-   "seconds": 11.4,
-   "ok": true
-  },
-  {
-   "run": 15,
-   "exit_code": 0,
-   "mode": "full",
-   "canary_seen": true,
    "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
@@ -256,7 +241,22 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 12.3,
+   "seconds": 11.9,
+   "ok": true
+  },
+  {
+   "run": 15,
+   "exit_code": 0,
+   "mode": "full",
+   "canary_seen": true,
+   "successful_polls": 10,
+   "failed_polls": [],
+   "probe_timed_out": false,
+   "command_deadline_expired": false,
+   "external_observed_count": 0,
+   "external": [],
+   "undeclared": [],
+   "seconds": 12.4,
    "ok": true
   },
   {
@@ -264,7 +264,7 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
@@ -286,7 +286,7 @@
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.5,
+   "seconds": 11.6,
    "ok": true
   },
   {
@@ -294,14 +294,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 11,
+   "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.7,
+   "seconds": 11.9,
    "ok": true
   },
   {
@@ -309,14 +309,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 10,
+   "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.3,
+   "seconds": 11.4,
    "ok": true
   },
   {
@@ -324,14 +324,14 @@
    "exit_code": 0,
    "mode": "full",
    "canary_seen": true,
-   "successful_polls": 11,
+   "successful_polls": 9,
    "failed_polls": [],
    "probe_timed_out": false,
    "command_deadline_expired": false,
    "external_observed_count": 0,
    "external": [],
    "undeclared": [],
-   "seconds": 11.6,
+   "seconds": 11.9,
    "ok": true
   }
  ]

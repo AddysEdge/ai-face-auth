@@ -30,10 +30,18 @@ decision D15 should be revisited.
 - [ ] Both configured thresholds genuinely exercised by real trials
 - [ ] ≥ 2 physically different cameras
 - [ ] Lighting, pose, distance, eyewear coverage adequate; drops justified
-- [ ] Per-participant results reported before aggregate
+- [ ] Per-participant results reported **before** aggregate, with the
+      participant treated as the unit of analysis
 - [ ] Denominators, exclusions, and intervals present for every rate
 - [ ] Zero-event rates reported as upper bounds, not as "0 %"
 - [ ] FAR broken down **per attack type**, never pooled across S1–S4
+- [ ] Every rate and interval is **labelled descriptive and trial-level**, and
+      quoted with the participant count it rests on
+- [ ] The headline limitation states exact participant count, trial counts and
+      exclusions, and appears **first**
+- [ ] Both participant-level and trial-level sampling limitations are stated
+- [ ] **No wording implies certification, a population rate, or general
+      applicability** — reject the report if it does
 
 ## C. The spoof margin — the decisive question
 
@@ -59,9 +67,16 @@ decision D15 should be revisited.
 
 - [ ] Consent obtained from every participant before recording
 - [ ] No raw frames or video retained (or deviation approved under D9)
-- [ ] No direct identifiers in any dataset, report, or filename
-- [ ] Nothing participant-level committed to Git
-- [ ] Retention/deletion log current; withdrawals honoured
+- [ ] **Identifying records (Category A) and measurements (Category B) stored
+      separately** — not the same directory, archive, or backup
+- [ ] Signed consent forms, contact details and any pseudonym mapping held only
+      in D6a storage; **none in the repository**
+- [ ] No direct identifiers in any Category B dataset, report, or filename
+- [ ] Nothing participant-level committed to Git, in either category
+- [ ] Withdrawal mechanism worked as described, and withdrawals were honoured
+- [ ] Retention/deletion log current, **with A and B tracked separately**
+- [ ] The erasure method is recorded, and the log does **not** claim secure
+      erasure that the method cannot deliver
 - [ ] Attack media disposed of per D10
 
 ---

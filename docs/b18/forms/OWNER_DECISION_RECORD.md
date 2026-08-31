@@ -21,9 +21,11 @@
 | D3 | If Stage 2: participant count, recruitment, relationship to owner | ✅ | | State convenience-sample status plainly |
 | D4 | Consent form, withdrawal process, administrator | ✅ | | |
 | D5 | Ethical / institutional review required in this jurisdiction or employment context? | ✅ | | Owner must answer; the plan cannot |
-| D6 | Storage location, access control, encryption | ✅ | | |
-| D7 | Retention period; deletion procedure; backups policy | ✅ | | Plan proposes 90 days, no backups |
-| D8 | Confirm privacy defaults (plan §11) or record deviations | ✅ | | |
+| D6a | Storage / access / encryption for **identifying records** (signed consent, contact route, pseudonym mapping) | ✅ | | Must be separate from D6b |
+| D6b | Storage / access / encryption for **pseudonymised measurements** | ✅ | | Encryption is a collection-time decision |
+| D7a | Retention and destruction for **identifying records**; withdrawal mechanism (held mapping vs participant-held token); does a consent record outlive the data? | ✅ | | |
+| D7b | Retention and deletion for **measurements**, and the **actual erasure method** with its residual limitation | ✅ | | Plain deletion is **not** secure erasure - see plan §12.3 |
+| D8 | Confirm privacy defaults (plan §11) or record deviations | ✅ | | Includes the Category A / Category B separation |
 | D9 | Are raw frames ever permitted on disk? | ✅ | | Plan proposes **no** |
 | D10 | Attack media: whose likeness, and disposal plan | ✅ | | Attack media is itself sensitive |
 | D11 | Second camera device (required by issue #14) | | | |
@@ -55,8 +57,33 @@ Written **before** capture. Copy into the final report unchanged.
 | `min_face_continuity` | `0.5` | `src/faceauth/config.py` |
 | `challenge_timeout_seconds` | `5.0` | `src/faceauth/config.py` |
 
-`docs/THREAT_MODEL.md` §2 discrepancy (states 0.15) reconciled: `yes / no`
-How: `<...>`
+Threshold semantics confirmed against source, not documentation:
+`max(scores) >= 0.40` **and** `min(scores) <= 0.20`, both inclusive.
+`docs/THREAT_MODEL.md` §2 was corrected to match and now cites `config.py` as
+authoritative; 0.15 survives there only as a labelled historical note.
+
+Confirmed still true at freeze time: `yes / no`  Checked by: `<...>`
+
+## Data-handling decisions (D6a/D6b, D7a/D7b)
+
+| | Category A - identifying records | Category B - measurements |
+|---|---|---|
+| Storage location | `<D6a>` | `<D6b>` |
+| Access control | `<D6a>` | `<D6b>` |
+| Encryption | `<D6a>` | `<D6b>` |
+| Retention | `<D7a>` | `<D7b>` |
+| Destruction method | `<D7a>` | `<D7b>` |
+
+Confirmed A and B do **not** share a directory, archive, or backup: `yes / no`
+
+**Withdrawal mechanism (D7a):** `held mapping / participant-held token`
+If participant-held token: participants are told at consent time that losing
+the slip means withdrawal is not possible. Confirmed: `yes / no`
+
+**Erasure method (D7b):** `<full-disk encryption + key destruction / encrypted
+container / ATA Secure Erase / plain deletion>`
+**Residual limitation, stated honestly:** `<e.g. "plain deletion on an SSD does
+not guarantee the data is irrecoverable">`
 
 ---
 

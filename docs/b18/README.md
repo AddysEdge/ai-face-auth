@@ -25,8 +25,10 @@ room for a documentation folder.
 
 ## Rules for this directory
 
-- **No participant information, ever.** No names, contact details, photographs,
-  or identifiers of any kind.
+- **No participant information, ever.** No names, signatures, contact details,
+  photographs, pseudonym mappings, or identifiers of any kind. A **completed**
+  consent form is a directly identifying record and belongs in the approved
+  identifying-records storage (decision D6a), never here.
 - **No captured measurements, ever.** No score series, no manifests, no session
   logs. Datasets live outside the repository (plan section 11.3).
 - Templates contain placeholders only. A filled-in template containing real

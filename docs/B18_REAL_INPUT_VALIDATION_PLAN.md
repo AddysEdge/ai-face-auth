@@ -46,8 +46,8 @@ configured today (`src/faceauth/config.py`, `LivenessConfig`):
 | Parameter | Value | Meaning |
 |---|---|---|
 | `enabled_challenges` | `[BLINK]` | Head-turn is implemented but **not** a default security boundary |
-| `blink_score_high` | **0.40** | Score must *rise to at least* this |
-| `blink_score_low` | **0.20** | Score must *also dip to at most* this |
+| `blink_score_high` | **0.40** | Score must reach **at or above** this (`>=`, inclusive) |
+| `blink_score_low` | **0.20** | Score must *also* reach **at or below** this (`<=`, inclusive) |
 | `head_turn_min_swing` | 0.045 | Only if head-turn is explicitly enabled |
 | `challenge_timeout_seconds` | 5.0 | Wall-clock window the human has |
 | `max_frames_per_challenge` | 300 | Runaway-loop backstop, not the real bound |
@@ -70,16 +70,22 @@ continuity is below `min_face_continuity`
 (`capture_utils.run_liveness_challenge`). FAR and FRR must therefore be defined
 on the **attempt outcome**, not on the blink decision alone (section 9).
 
-### 2.1 A discrepancy to resolve *before* capture
+### 2.1 Threshold semantics — reconciled
 
-`docs/THREAT_MODEL.md` §2 currently describes `decide_blink()` as requiring the
-score to "dip below a low threshold (0.15)". The shipping value is **0.20**
-(`config.py`, raised from 0.15 after live testing). The code is authoritative.
+Both comparisons are **inclusive**, verified against the shipping code rather
+than read off a document: a window whose maximum is exactly 0.40 and whose
+minimum is exactly 0.20 **passes**; 0.399 or 0.201 does not.
 
-This must be reconciled before thresholds are frozen (section 10), because a
-protocol that freezes the wrong number produces evidence for a configuration
-nobody ships. Recorded here as a pre-capture blocker rather than silently
-edited, since it also affects how §2's spoof narrative reads.
+`docs/THREAT_MODEL.md` §2 previously described the low threshold as 0.15 and
+used "rise above" / "dip below". It has been corrected in this branch to state
+**at or above 0.40** and **at or below 0.20**, and to name `config.py` as
+authoritative. The 0.15 value is retained there only as an explicitly labelled
+historical note about the trial conditions at the time.
+
+That correction also changed a substantive claim, not just a number. Under
+`blink_score_low = 0.15` the stationary-photo trial failed *both* conditions,
+which is what "nowhere near either threshold" described. At 0.20 it satisfies
+the low condition, so rejection rests on the high threshold alone — see §3.1.
 
 ---
 
@@ -133,10 +139,12 @@ the whole protocol; the rest stop the stage they belong to.
 | **D3** | If Stage 2: how many participants, recruited how, and with what relationship to the owner? | ✅ | Colleagues/family are convenience samples; this must be stated in the report, not hidden. |
 | **D4** | Consent: approve the form, the withdrawal process, and who administers it. | ✅ | Section 12. |
 | **D5** | Is any ethical/institutional review required in the owner's jurisdiction or employment context? | ✅ | The owner must answer this; this document cannot. |
-| **D6** | Storage location, access control, and encryption for derived measurements. | ✅ | Section 11. |
-| **D7** | Retention period and deletion procedure, including on withdrawal. | ✅ | Section 12.3. |
-| **D8** | Confirm the privacy defaults in section 11, or record deviations with reasons. | ✅ | Especially "no raw frames, ever". |
-| **D9** | Are raw frames *ever* permitted to touch disk? Default proposal: **no**. | ✅ | If yes, D6/D7 become far more demanding and the risk statement in 11.5 changes materially. |
+| **D6a** | Storage location, access control and encryption for **identifying records** — signed consent forms, contact route, pseudonym mapping. | ✅ | §11.2. Must be **separate** from D6b. |
+| **D6b** | Storage location, access control and encryption for **pseudonymised measurements**. | ✅ | §11.2. Encryption is a collection-time decision (§12.3). |
+| **D7a** | Retention and destruction for **identifying records**; which withdrawal mechanism (held mapping vs participant-held token); whether a consent record outlives the data it governs. | ✅ | §11.2, §12.2. |
+| **D7b** | Retention and deletion for **measurements**, and the **actual erasure method** used, with its residual limitation recorded honestly. | ✅ | §12.3 — plain deletion is not secure erasure. |
+| **D8** | Confirm the privacy defaults in section 11, or record deviations with reasons. | ✅ | Especially "no raw frames, ever", and the Category A / Category B separation. |
+| **D9** | Are raw frames *ever* permitted to touch disk? Default proposal: **no**. | ✅ | If yes, D6b/D7b become far more demanding and the risk statement in 11.5 changes materially. |
 | **D10** | Attack media: who appears in the printed photo / replay video, and what happens to that media afterwards? | ✅ | Attack media is a photograph of a person — it is itself sensitive. |
 | **D11** | Second camera device: which one, and is it owned/borrowed/returned? | | Required by issue #14. |
 | **D12** | Target sample size and therefore the strength of claim being attempted (section 6). | | Determines what the report may conclude. |
@@ -187,16 +195,16 @@ The only stage capable of producing B18 evidence. Requires D2–D5, D10, D11.
 
 ## 6. Sample size — what each size can and cannot support
 
-No number here is chosen for convenience, and none is proposed as
-"the" answer; D12 is the owner's decision. What follows is what each choice
-would license.
+No number here is chosen for convenience, and none is proposed as "the" answer;
+D12 is the owner's decision. What follows is what each choice would license —
+and, more importantly, what it would not.
 
-### 6.1 The statistics, stated plainly
+### 6.1 What the arithmetic actually gives you
 
-For a rate estimated from `n` trials with zero observed events, the 95% upper
-confidence bound is approximately **3/n** (the "rule of three"):
+For a rate estimated from `n` **trials** with zero observed events, the 95 %
+upper bound is approximately **3/n** (the "rule of three"):
 
-| Trials with zero failures | 95% upper bound on the rate |
+| Trials with zero failures | 95 % upper bound |
 |---|---|
 | 20 | ≈ 14 % |
 | 30 | ≈ 10 % |
@@ -204,37 +212,60 @@ confidence bound is approximately **3/n** (the "rule of three"):
 | 100 | ≈ 3 % |
 | 300 | ≈ 1 % |
 
-Two consequences worth internalising before choosing a number:
+**Read that table narrowly.** It describes *the trials that were run*. Three
+limits apply to every number produced this way, and they must travel with the
+number wherever it is quoted:
 
 1. **"Zero failures" is not "zero rate."** A clean run of 30 spoof trials is
-   consistent with a true FAR as high as 10 %.
-2. **Trials within one participant are not independent.** Twenty blinks from one
-   person is closer to one observation of a person than to twenty observations
-   of people. Binomial intervals computed over pooled trials will look far
-   tighter than the evidence justifies. **Report per-participant rates first,
-   and treat the participant as the unit of analysis** for any population claim
-   (section 9.4).
+   consistent with a true rate as high as 10 % *for those conditions*.
+2. **Trials within one participant are not independent observations of people.**
+   Twenty blinks from one person is closer to one observation of a person than
+   to twenty observations of people, and the same holds for twenty presentations
+   of one printed photo. A binomial interval computed over pooled trials
+   therefore **understates uncertainty about people and attacks**, sometimes by a
+   large factor. It is not a population bound and must never be presented as one.
+3. **The participants are not a random sample of anyone.** Whatever is measured
+   here describes the people who volunteered, the attacks that were built, the
+   room they were in, and the two cameras used.
+
+Accordingly, every rate this protocol produces is **descriptive and conditional
+on the sampled trials, participants, attacks and conditions** — not a population
+guarantee, not a certification, and not a security rate that can be quoted
+without its denominator and its sampling limits.
 
 ### 6.2 Proposed shape, for the owner to accept or change
 
+Trial-level bounds below are **descriptive only**, and are stated together with
+the participant count that actually limits them.
+
 | Stage | Participants | Genuine trials | Spoof trials | What it can support |
 |---|---|---|---|---|
-| 1 | 1 (owner) | ~40 | ~40 | Regression detection; first margin estimate. **No population claim.** |
-| 2a | ≥ 5 | ≥ 20 each (≥ 100) | ≥ 20 each (≥ 100) | "No gross FRR problem across a handful of people"; FAR upper bound ≈ 3 % pooled, but with only 5 independent subjects. Honest characterisation, not certification. |
-| 2b | ≥ 10 | ≥ 30 each (≥ 300) | ≥ 30 each (≥ 300) | FAR upper bound ≈ 1 % pooled; enough between-subject variation to say something about generalisation. Still a convenience sample. |
+| 1 | 1 (owner) | ~40 | ~40 | Detects gross regression; produces a first margin estimate. **No claim about people at all** — one face, one blink habit. |
+| 2a | ≥ 5 | ≥ 20 each (≥ 100) | ≥ 20 each (≥ 100) | Small convenience-sample **characterisation**. Trial-level zero-event bound ≈ 3 %, **but over only 5 non-randomly-chosen people, so it bounds nothing about a population.** |
+| 2b | ≥ 10 | ≥ 30 each (≥ 300) | ≥ 30 each (≥ 300) | Larger convenience-sample **characterisation**, with more between-subject spread visible. Trial-level zero-event bound ≈ 1 %, **again over 10 non-randomly-chosen people; this is not evidence of generalisation.** |
 
-**Even 2b does not certify the control.** It is a small, non-random, unblinded,
-single-site study run by the system's own author. That limitation belongs in the
-final report's headline, not a footnote.
+**No stage in this table certifies the control, and none of them establishes
+that it generalises.** Even 2b is a small, non-random, unblinded, single-site
+study run by the system's own author, against attacks that same author built.
+Ten participants is enough to *see variation between people*; it is not enough
+to *characterise a population*, and the report must not imply otherwise. That
+limitation belongs in the report's headline, not a footnote.
+
+What the stages are genuinely for: detecting that the control is broken,
+measuring the spoof margin (§6.3), and exposing between-participant variation
+that a single-subject test cannot show.
 
 ### 6.3 The margin matters more than the rate
 
-Because spoof rejection currently hinges on `max(blink_score) < 0.40` with an
-observed margin of 0.018 (§3.1), the protocol should treat
-**`max(blink_score)` per spoof trial as the primary outcome**, reported as a
-distribution, not as a pass/fail count. Ten spoof trials whose maxima cluster at
-0.38 are far more alarming than a hundred that sit at 0.15, even though both
-report FAR = 0.
+Because spoof rejection currently hinges on `max(blink_score)` failing to reach
+0.40, with an observed margin of 0.018 from a single trial (§3.1), the protocol
+treats **`max(blink_score)` per spoof trial as the primary outcome**, reported
+as a distribution rather than a pass/fail count.
+
+This is deliberate: a margin is far less sensitive to sample size than a rate
+is. Ten spoof trials whose maxima cluster at 0.38 are far more alarming than a
+hundred that sit at 0.15 — and both report FAR = 0. A distribution of near-miss
+values says something useful even at small *n*, where a rate does not.
 
 ---
 
@@ -361,22 +392,38 @@ it with printed-photo trials manufactures a misleadingly moderate figure.
 Every reported rate states: numerator, denominator, number excluded, and why.
 Exclusion counts appear next to the rate, never only in an appendix.
 
-### 9.3 Intervals
+### 9.3 Intervals — descriptive, and labelled as such
 
-- Wilson score 95 % intervals for proportions (better than normal approximation
-  at small n and at rates near 0).
+- Wilson score 95 % intervals for proportions (better than the normal
+  approximation at small *n* and at rates near 0).
 - Where zero events are observed, report the one-sided 95 % upper bound
   explicitly (§6.1) instead of "0 %".
 - For `max(blink_score)` distributions: n, min, median, max, and the count
   within 0.05 of the 0.40 threshold. **Report the observed maximum explicitly**
   — it is the near-miss that matters.
 
-### 9.4 Per-participant before aggregate
+**Every interval in this protocol is a trial-level, descriptive interval.** It
+summarises the attempts that were actually run. It is **not** a population
+bound, because trials are clustered within a small number of non-randomly
+chosen participants and attacks (§6.1). Any interval quoted in the report must
+be accompanied, in the same sentence or table row, by the participant count it
+rests on. A trial-level bound presented without that count is a misleading
+number and must not appear.
 
-Report a per-participant table first (each participant's own FRR and FAR with
-counts), then any aggregate. If per-participant rates vary widely, the aggregate
-is not a meaningful summary and the report must say so rather than leading with
-it.
+Phrases that must not be used for these figures: "the FAR is", "guarantees",
+"certified", "at most X% of users", or any bare rate without its denominator
+and participant count.
+
+### 9.4 Per-participant before aggregate — the participant is the unit
+
+**Per-participant results are primary.** Report a per-participant table first —
+each participant's own FRR and FAR with counts — before any aggregate.
+
+Aggregates over pooled trials are secondary and descriptive. If per-participant
+rates vary noticeably, the aggregate is not a meaningful summary and the report
+must say so rather than leading with it. Where a statement about people is
+attempted at all, the number of *participants* is the sample size, not the
+number of trials.
 
 ---
 
@@ -412,7 +459,7 @@ test.
 
 ## 11. Proposed privacy-preserving defaults
 
-**Proposals, not decisions.** Each requires D6–D9, D16.
+**Proposals, not decisions.** Each requires D6a/D6b, D7a/D7b, D8, D9, D16.
 
 ### 11.1 Collection
 
@@ -424,19 +471,52 @@ test.
   `scripts/check_network_activity.py` can be run before a session as a
   precondition check.
 
-### 11.2 Identifiers
+### 11.2 Two categories of record, kept apart
 
-- Participants are identified by an opaque pseudonymous ID (e.g. `P01`), and
-  sessions by `S01`.
-- **Prohibited in any dataset, filename, or report:** names, initials, email
-  addresses, account or user IDs, dates of birth, device serial numbers,
-  photographs, and free-text that could identify someone.
-- The mapping from pseudonym to person, if one exists at all, is required only
-  to honour withdrawal (D7). It is kept **separately from the measurements**,
-  under the access control in D6, and deleted when retention ends. If the owner
-  prefers, withdrawal can instead be supported by giving each participant their
-  own ID slip and keeping **no** mapping — at the cost that withdrawal then
-  depends on the participant retaining it.
+This protocol produces **two** kinds of record, and conflating them is the
+mistake to avoid. A signed consent form is not pseudonymous data — it is a
+signature, which is a direct identifier, and it necessarily exists.
+
+| | **Category A — identifying records** | **Category B — pseudonymised measurements** |
+|---|---|---|
+| Contents | Signed consent forms, signatures, contact route for withdrawal, and the pseudonym→person mapping if one is kept | Trial manifests: score series, outcomes, conditions, `P01` / `S01` only |
+| Identifies a person? | **Yes, directly** | Not directly; still person-linked (§11.5) |
+| Storage | Separate approved location and access control (**D6a**) | Separate approved location and access control (**D6b**) |
+| Retention | **D7a** — tied to the consent/withdrawal obligation | **D7b** — tied to the analysis |
+| In Git? | **Never, under any circumstances** | Never; only a verified aggregate report, under D16 |
+
+**The two must not be stored in the same directory, the same archive, or the
+same backup.** Category A is what makes withdrawal possible; Category B is what
+the analysis consumes. Keeping them together would put a signature next to a
+biometric-derived measurement series and defeat the point of pseudonymising the
+manifest at all.
+
+- Participants are identified in Category B by an opaque pseudonymous ID
+  (`P01`) and session ID (`S01`), and by nothing else.
+- **Prohibited in any Category B dataset, filename, or report:** names,
+  initials, signatures, email addresses, account or user IDs, dates of birth,
+  device serial numbers, photographs, and free text that could identify someone.
+- **Prohibited in the repository, always:** completed consent forms,
+  signatures, contact details, and any pseudonym→person mapping. `docs/b18/`
+  holds blank forms only.
+
+#### Withdrawal without putting identity in the manifest
+
+Withdrawal requires locating one participant's Category B data from their
+identity, without that identity ever appearing in Category B. Two approved
+options; the owner picks one under D7a:
+
+- **Option 1 — held mapping.** A pseudonym→person mapping is kept in Category A
+  storage. Withdrawal is a lookup. Simple and reliable; the cost is that an
+  identifying mapping exists for as long as the mapping is retained.
+- **Option 2 — participant-held token.** No mapping is kept anywhere. Each
+  participant is handed their own `P__` on a slip at consent time and told that
+  quoting it is the only way to withdraw. Nothing identifying persists; the cost
+  is that a participant who loses the slip **cannot** withdraw, and they must be
+  told that plainly at consent time rather than discovering it later.
+
+Whichever is chosen, it is written into the consent form so the participant
+knows before signing which one applies to them.
 
 ### 11.3 What may enter Git
 
@@ -444,7 +524,7 @@ test.
   session logs.
 - Only a **verified aggregate, non-identifying** final report may be committed,
   and only under D16 after the owner has reviewed it for re-identification risk.
-- Datasets live outside the repository, at the location set by D6. `.gitignore`
+- Datasets live outside the repository, at the locations set by D6a and D6b. `.gitignore`
   should be extended to make accidental commits harder before any capture
   begins.
 
@@ -463,14 +543,21 @@ person-linked, and this data is collected *because* it discriminates between
 people and non-people. Landmark-derived quantities such as inter-eye distance
 are physical measurements of a face.
 
-Calling these "anonymous" would be overclaiming. The defensible statements are:
+Calling these "anonymous" would be overclaiming. The defensible statements,
+**about Category B only**, are:
 
-- they contain **no direct identifiers** (11.2);
+- they contain **no direct identifiers** (§11.2);
 - they are **not images** and cannot be viewed as a face;
 - re-identification from them is not straightforward, but has **not been
   formally assessed** by this project;
 - they should therefore be treated as **pseudonymised personal data**, not
   anonymous data, and handled under sections 11–12 accordingly.
+
+**None of that applies to Category A.** Signed consent forms, contact details
+and any pseudonym mapping are **directly identifying records** and are not
+pseudonymised by anything. They are the reason the two categories are stored and
+destroyed separately (§11.2, §12.3), and they are never committed to this
+repository.
 
 The attack media (printed photo, replay video) is an image of a real person and
 is unambiguously sensitive; D10 governs it.
@@ -491,8 +578,15 @@ split rules in section 10.2.
 Before any recorded trial, each participant receives and signs
 `docs/b18/forms/CONSENT_FORM.md`, covering: purpose; exactly what is and is
 not recorded (explicitly: *no images or video are kept*); storage location and
-access; retention period; that participation is voluntary; how to withdraw; that
-withdrawal is honoured without needing a reason; and a contact route.
+access **for both record categories**; the two retention periods; that
+participation is voluntary; **which withdrawal mechanism applies to them**
+(§11.2) and its limits; that withdrawal is honoured without needing a reason;
+and a contact route.
+
+The **completed, signed form is a Category A identifying record.** It goes
+straight to D6a storage, never into the measurement directory, and never into
+Git. `docs/b18/forms/CONSENT_FORM.md` in this repository is a blank template
+and must stay that way.
 
 Consent is **specific to B18**. It does not cover reuse for other work.
 
@@ -500,29 +594,80 @@ Consent is **specific to B18**. It does not cover reuse for other work.
 
 - A participant may withdraw at any time, during or after a session, without
   giving a reason and without consequence.
-- On withdrawal, all of that participant's measurements are deleted under 12.3,
-  and the deletion is recorded in the retention log with date and confirmation.
+- Withdrawal is actioned through whichever mechanism was chosen in §11.2 —
+  held mapping, or participant-held token.
+- On withdrawal, that participant's **Category B** measurements are deleted
+  under 12.3, and their **Category A** consent record is handled per D7a: either
+  destroyed with it, or retained as the record that consent was given and then
+  withdrawn. The owner decides which; both are defensible, and the choice is
+  disclosed on the consent form.
+- Deletion is recorded in the retention log with date and confirmation.
 - If an aggregate report has already been published and cannot be un-published,
   the participant is told this **at consent time**, not after. Aggregates should
   therefore be constructed so that no individual's contribution is separable.
 
-### 12.3 Retention and deletion
+### 12.3 Retention and deletion — separately for each category
 
-- **Retention period:** proposed default **90 days** after the B18 decision is
-  recorded, then deletion. Owner sets the actual value (D7).
-- **Deletion procedure:** remove the dataset directory and any derived
-  intermediates; empty the recycle bin / secure-delete; delete the
-  pseudonym mapping if one is kept; scrub temporary and scratch files; then
-  **verify** by searching the machine for the session IDs and confirming zero
-  hits. Every step is recorded in
-  `docs/b18/forms/RETENTION_DELETION_LOG.md`.
-- **Backups:** proposed default is **no backups of participant data at all** —
-  backups multiply copies that must later be found and destroyed. If the owner
-  requires backups (D7), each copy's location and its deletion must be tracked
-  in the same log.
-- **Temporary files:** the analysis must not leave score series in scratch
-  directories; cleanup is part of the session checklist and is verified, not
-  assumed.
+**Retention periods are set separately** (D7a for Category A, D7b for
+Category B), because they answer to different obligations: consent records
+exist to evidence consent and enable withdrawal; measurements exist for the
+analysis.
+
+- **Proposed default, Category B (measurements):** 90 days after the B18
+  decision is recorded, then deletion.
+- **Proposed default, Category A (consent records):** retained until the
+  Category B data it governs is destroyed and the B18 decision is recorded,
+  then destroyed — unless the owner decides under D7a that evidence of consent
+  should outlive the data, in which case that period is stated explicitly.
+
+#### Deletion procedure
+
+1. Remove the Category B dataset directory and all derived intermediates.
+2. Scrub temporary and scratch files; the analysis must not leave score series
+   behind (verified, not assumed).
+3. Destroy Category A records per D7a — including physical paper, if consent was
+   collected on paper.
+4. Destroy the pseudonym mapping, if one was kept.
+5. Destroy or dispose of attack media per D10.
+6. **Verify** by searching for every session and participant ID across the
+   approved storage locations and confirming zero hits, and by confirming Git
+   history contains nothing from either category.
+
+Every step is recorded in `docs/b18/forms/RETENTION_DELETION_LOG.md`.
+
+#### What deletion does and does not guarantee — stated honestly
+
+**Deleting a file, and emptying the recycle bin, does not guarantee the data is
+irrecoverable.** On SSDs — which is what this project runs on — wear levelling,
+over-provisioning, and the drive's own remapping mean the original blocks may
+persist and are not reliably reachable, let alone overwritable, by any
+file-level tool. File-level "secure erase" utilities that overwrite in place
+were designed for spinning disks and **should not be relied on for SSDs**.
+Copy-on-write filesystems, snapshots, and system restore points can retain
+copies independently.
+
+The defensible approaches, in rough order of strength:
+
+1. **Full-disk or volume-level encryption from the start**, with the dataset
+   stored only inside it, so that destroying the key renders the data
+   unreadable regardless of block remapping. This is the recommended default
+   under D6a/D6b, and it is the reason encryption is a *collection-time* decision
+   rather than an afterthought.
+2. **Encrypted container per dataset**, destroyed by discarding its key.
+3. **ATA Secure Erase / NVMe Format** of the whole device — effective, but
+   destroys everything on it, so it is only realistic for dedicated media.
+4. Plain deletion — removes the reference, and is **not** a guarantee of
+   erasure.
+
+The owner records under D7b **which method is actually used**, and the retention
+log records the residual limitation truthfully. If the method is plain deletion,
+the log must say that recoverability was not eliminated, rather than recording
+"securely deleted".
+
+- **Backups:** proposed default is **no backups of either category** — backups
+  multiply copies that must later be found and destroyed, and each copy inherits
+  the erasure problem above. If the owner requires backups (D7a/D7b), each copy's
+  location, medium, and destruction must be tracked in the same log.
 
 ---
 
@@ -552,9 +697,10 @@ Mapping to issue #14's checklist:
    distributions on **both sides** of 0.40 and 0.20 (§7.2, §9).
 2. The configured thresholds actually exercised — demonstrated by real trials
    whose scores cross them, not by synthetic proxies.
-3. FAR and FRR per §9, with per-attack-type breakdown, denominators,
-   exclusions, per-participant tables, and Wilson intervals or explicit
-   zero-event upper bounds.
+3. FAR and FRR per §9 — **per-participant tables first**, per-attack-type
+   breakdown, denominators, exclusions, and Wilson intervals or explicit
+   zero-event upper bounds, each labelled **descriptive and trial-level** and
+   quoted with the participant count it rests on (§9.3).
 4. Static printed-photo attacks (S1–S2), **including the distribution of
    per-trial `max(blink_score)` and its margin to 0.40** (§6.3).
 5. Display/replay behaviour (S3–S4), with the known replay limitation
@@ -578,7 +724,9 @@ Fixed before capture; these are proposals:
 - **FRR** low enough that the control is usable, at a value the owner sets in
   advance, reported with its interval.
 - Results **consistent across participants and both cameras** — a control that
-  works for one person or one device has not been validated.
+  works for one person or one device has not been validated. Consistency here is
+  a qualitative check on the participants actually tested; it is not a
+  generalisation claim.
 
 ### 14.3 What would remain insufficient
 
@@ -588,6 +736,10 @@ Fixed before capture; these are proposals:
 - Zero observed spoof accepts with no margin analysis (§6.3).
 - Pooled FAR that averages replay attacks together with photo attacks.
 - Rates reported without denominators, exclusions, or intervals.
+- A pooled trial-level rate or bound quoted **without** the participant count
+  and the non-independence limitation beside it (§6.1, §9.3).
+- Any wording implying certification, a population security rate, or general
+  applicability — from any stage of this study.
 - Thresholds chosen after seeing the evaluation set (§10).
 - A green summary table with no recorded human security decision (§15).
 - Passing results that the report cannot explain how to reproduce (§13).
@@ -617,8 +769,11 @@ A recorded **decision**, not an observation, using
 
 All must be true before the first recorded trial:
 
-- [ ] D1–D16 recorded in the owner decision record
-- [ ] §2.1 threshold discrepancy reconciled; thresholds frozen
+- [ ] Every decision (D1–D16, including D6a/D6b and D7a/D7b) recorded in the owner decision record
+- [ ] Thresholds frozen; §2.1 confirms the threat model and code agree
+- [ ] **Two separate storage locations provisioned** — identifying records (D6a) and measurements (D6b) — and confirmed not to share a directory, archive, or backup
+- [ ] Withdrawal mechanism chosen (§11.2) and written into the consent form
+- [ ] Erasure method chosen (D7b) with its residual limitation acknowledged
 - [ ] Pass criteria (§14.2) written down with numbers
 - [ ] Consent form approved and, if applicable, ethical review resolved (D5)
 - [ ] Storage location provisioned with the approved access control and encryption

@@ -16,12 +16,36 @@
 
 ## 0. Headline limitation — state it first
 
-`<e.g. "This is a convenience sample of N participants, unblinded, single site,
-run by the system's author. It characterises behaviour; it does not certify the
-control.">`
+**Mandatory. This paragraph leads the report and may not be moved to an
+appendix.** It must state, in numbers:
 
-If Stage 1: **"Owner-only pilot. This cannot clear B18 and no population claim
-is made."**
+- exact number of **participants**: `<N>`
+- exact number of **trials attempted / valid / excluded**: `<a / b / c>`
+- that the participants are a **convenience sample**, not random, and how they
+  were recruited
+- that every rate below is **descriptive and trial-level**, conditional on these
+  participants, these attacks, these conditions and these two cameras
+- that **no result here certifies the control, establishes a population rate, or
+  demonstrates general applicability**
+
+Template: `<"N participants (convenience sample, recruited by ...), T valid
+trials of A attempted (E excluded). All rates below are descriptive and
+trial-level, conditional on these participants, attacks, conditions and
+cameras. This characterises behaviour; it does not certify the control, does
+not establish a population rate, and does not demonstrate that the result
+generalises.">`
+
+If Stage 1: **"Owner-only pilot, n = 1 participant. This cannot clear B18. No
+claim about people is made."**
+
+### 0.1 Sampling limitations — both kinds
+
+| Limitation | Statement |
+|---|---|
+| **Participant sampling** | `<how many, how recruited, relationship to the author, what population they do not represent>` |
+| **Trial sampling** | `<trials are clustered within participants and within a small set of attack instances; trial-level intervals therefore understate uncertainty about people and attacks>` |
+| **Condition sampling** | `<which cells of the matrix were covered, which were dropped>` |
+| **Attack sampling** | `<how many distinct printed photos / screens / videos; who built them>` |
 
 ## 1. Pre-registered criteria (copied unchanged from D13)
 
@@ -58,17 +82,24 @@ the result is uncalibrated and B18 stays open.
 | software_error | |
 | ambiguous_ground_truth | |
 
-## 3. Per-participant results (before any aggregate)
+## 3. Per-participant results — primary
 
-| Participant | Camera | Genuine n | FRR | Spoof n | FAR | max(blink) over spoofs |
+**These come before any aggregate, and the participant is the unit of analysis
+for any statement about people.**
+
+| Participant | Camera | Genuine n | FRR (count/den) | Spoof n | FAR (count/den) | max(blink) over spoofs |
 |---|---|---|---|---|---|---|
 | P01 | | | | | | |
 
-If these vary widely, say so here and do **not** lead with the aggregate.
+If these vary noticeably, say so here and do **not** lead with the aggregate.
+
+Number of participants contributing to any aggregate below: `<N>` — this, not
+the trial count, is the sample size for anything said about people.
 
 ## 4. Genuine trials
 
-- FRR = `<num>/<den>` = `<rate>`, Wilson 95 % CI `[a, b]`
+- FRR = `<num>/<den>` = `<rate>`, Wilson 95 % CI `[a, b]` — **descriptive,
+  trial-level, over `<N>` participants; not a population rate**
 - Genuine non-blink (N*) correct-rejection rate = `<num>/<den>` — **not FRR**
 - Distribution of `max(blink_score)` for genuine blinks: n, min, median, max
 - Distribution of `min(blink_score)`: n, min, median, max
@@ -76,7 +107,10 @@ If these vary widely, say so here and do **not** lead with the aggregate.
 
 ## 5. Spoof trials — by attack type, never pooled
 
-| Type | Description | n | Accepted | FAR (95 % CI or upper bound) | max(blink) observed | Margin to 0.40 |
+Every FAR below is **descriptive and trial-level over `<N>` participants and
+`<M>` distinct attack instances**, and is not a population rate.
+
+| Type | Description | n | Accepted | FAR (95 % CI or upper bound, descriptive) | max(blink) observed | Margin to 0.40 |
 |---|---|---|---|---|---|---|
 | S1 | printed photo, propped | | | | | |
 | S2 | printed photo, hand-held | | | | | |
@@ -130,8 +164,16 @@ compare it to the pre-registered acceptable margin.
 
 ## 10. What this report does not establish
 
-`<Be specific. Sample size, population, blinding, adversary sophistication,
-attack media quality, and anything the condition matrix did not cover.>`
+Required, and specific — not a generic disclaimer:
+
+- **Does not certify** the liveness control.
+- **Does not establish a population FAR or FRR.** The trial-level intervals
+  above describe the attempts that were run; trials are clustered within `<N>`
+  non-randomly-chosen participants and `<M>` attack instances.
+- **Does not demonstrate generalisation** to people, cameras, lighting, or
+  attacks outside those tested.
+- `<Blinding, adversary sophistication, attack media quality, condition cells
+  not covered, and anything else the study could not reach.>`
 
 ---
 

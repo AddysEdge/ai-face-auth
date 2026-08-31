@@ -123,7 +123,7 @@ of zero tells you nothing about how close you were.
 ## 4. Decisions that require owner approval
 
 **No capture may begin until every item below has a recorded decision.** Use
-`docs/b18/templates/OWNER_DECISION_RECORD.md`. Items marked **blocking** stop
+`docs/b18/forms/OWNER_DECISION_RECORD.md`. Items marked **blocking** stop
 the whole protocol; the rest stop the stage they belong to.
 
 | # | Decision | Blocking | Notes |
@@ -489,7 +489,7 @@ split rules in section 10.2.
 ### 12.1 Consent
 
 Before any recorded trial, each participant receives and signs
-`docs/b18/templates/CONSENT_FORM.md`, covering: purpose; exactly what is and is
+`docs/b18/forms/CONSENT_FORM.md`, covering: purpose; exactly what is and is
 not recorded (explicitly: *no images or video are kept*); storage location and
 access; retention period; that participation is voluntary; how to withdraw; that
 withdrawal is honoured without needing a reason; and a contact route.
@@ -515,7 +515,7 @@ Consent is **specific to B18**. It does not cover reuse for other work.
   pseudonym mapping if one is kept; scrub temporary and scratch files; then
   **verify** by searching the machine for the session IDs and confirming zero
   hits. Every step is recorded in
-  `docs/b18/templates/RETENTION_DELETION_LOG.md`.
+  `docs/b18/forms/RETENTION_DELETION_LOG.md`.
 - **Backups:** proposed default is **no backups of participant data at all** —
   backups multiply copies that must later be found and destroyed. If the owner
   requires backups (D7), each copy's location and its deletion must be tracked
@@ -597,7 +597,7 @@ Fixed before capture; these are proposals:
 ## 15. The security review B18(h) requires
 
 A recorded **decision**, not an observation, using
-`docs/b18/templates/SECURITY_REVIEW_CHECKLIST.md`. It must:
+`docs/b18/forms/SECURITY_REVIEW_CHECKLIST.md`. It must:
 
 - be performed against the evidence, by a named reviewer role, on a stated date;
 - ideally be performed by someone **other than the person who ran the trials**

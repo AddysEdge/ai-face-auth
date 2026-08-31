@@ -2,21 +2,26 @@
 
 **B18 is OPEN. Nothing here is authorization, and nothing here is evidence.**
 
-This directory holds the templates referenced by
+This directory holds the blank forms referenced by
 [`docs/B18_REAL_INPUT_VALIDATION_PLAN.md`](../B18_REAL_INPUT_VALIDATION_PLAN.md).
 They exist so that, *if* the repository owner approves real-input validation,
 the recording of decisions, consent, sessions, and results is consistent and
 reviewable rather than improvised.
 
-| Template | Used when |
+They live in `forms/`, not `templates/`, deliberately: `.gitignore` excludes
+`templates/` anywhere in the tree to keep **biometric templates and enrolled
+state** out of Git. That rule is a safety guard and was not weakened to make
+room for a documentation folder.
+
+| Form | Used when |
 |---|---|
-| `templates/OWNER_DECISION_RECORD.md` | Before anything else - records D1-D16 |
-| `templates/CONSENT_FORM.md` | Per participant, before their first recorded trial |
-| `templates/SESSION_CHECKLIST.md` | Per session, run top to bottom |
-| `templates/TRIAL_MANIFEST_SCHEMA.md` | Defines the per-trial record the analysis consumes |
-| `templates/RETENTION_DELETION_LOG.md` | From first capture until deletion is verified |
-| `templates/B18_EVIDENCE_REPORT.md` | After analysis, before security review |
-| `templates/SECURITY_REVIEW_CHECKLIST.md` | The B18(h) decision itself |
+| `forms/OWNER_DECISION_RECORD.md` | Before anything else - records D1-D16 |
+| `forms/CONSENT_FORM.md` | Per participant, before their first recorded trial |
+| `forms/SESSION_CHECKLIST.md` | Per session, run top to bottom |
+| `forms/TRIAL_MANIFEST_SCHEMA.md` | Defines the per-trial record the analysis consumes |
+| `forms/RETENTION_DELETION_LOG.md` | From first capture until deletion is verified |
+| `forms/B18_EVIDENCE_REPORT.md` | After analysis, before security review |
+| `forms/SECURITY_REVIEW_CHECKLIST.md` | The B18(h) decision itself |
 
 ## Rules for this directory
 

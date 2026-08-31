@@ -130,13 +130,16 @@ offline" and that was false.
 embedding, or enrolled template leaves the machine, in any phase. That
 commitment is absolute and appears in the never-do list below.
 
-**The process is nevertheless not network-silent.** The bundled MediaPipe
-binary opens a TLS connection to `play.googleapis.com` and uploads usage
-telemetry - MediaPipe version, platform, solution name, graph name, latency and
-invocation counts - when a MediaPipe session is torn down. This is documented,
-intended upstream behaviour with **no supported opt-out**; it is not something
-this project chose. It predates any dependency bump here and was simply not
-noticed.
+**The process makes no outbound network connections.** It did not always. The
+bundled MediaPipe binary opened a TLS connection to `play.googleapis.com` and
+uploaded usage telemetry - MediaPipe version, platform, solution name, graph
+name, latency and invocation counts - when a MediaPipe session was torn down.
+That was documented, intended upstream behaviour with **no supported opt-out**;
+it was not something this project chose, and it was simply not noticed for some
+time. Phase 2.5 removed the dependency rather than tolerating it. The account
+below is kept because the retraction it came from should stay legible, and
+because the same failure could recur with any dependency that opens a socket
+from native code.
 
 What the evidence covers, stated precisely: the **MediaPipe telemetry extension
 schema** was extracted from the shipped binary and contains no field that could
@@ -149,11 +152,13 @@ The full measurement - destination, trigger, the MediaPipe telemetry
 extension schema, retry
 behaviour, and the opt-out search - is in
 [`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md). Retracting the false
-offline claims was mandatory and is already done; it is not a fix. Phase 2.5
-measured a replacement runtime that reproduces MediaPipe's published pipeline
-closely enough to be viable, but it is not yet integrated and the
-network-silence observation has not been made, so the behaviour above is still
-current - see
+offline claims was mandatory and is already done; it was not the fix. The fix
+landed in Phase 2.5: the liveness path now runs the same pinned weights on
+ai-edge-litert through a reimplementation of MediaPipe's published pipeline, the
+mediapipe dependency is removed, and 20 fresh-process OS-level checks with an
+empty allowlist observed zero external endpoints. **The behaviour described
+above is historical, not current.** It is kept because the retraction it came
+from should stay legible. See
 [`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md). The decision
 record is
 [ADR-0005](docs/adr/0005-mediapipe-telemetry-and-the-offline-claim.md).

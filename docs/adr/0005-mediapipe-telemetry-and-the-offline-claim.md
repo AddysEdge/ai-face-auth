@@ -1,11 +1,15 @@
 # ADR-0005: MediaPipe telemetry and the offline claim
 
-- **Status:** **Proposed - decision OPEN.** Phase 2.5 (section 11) measured Option A,
-  built as an independent reimplementation, as **viable**: after correcting the
-  preprocessing path it agrees with the 1.0.1 oracle to 0.0136 on the blink score
-  and 0.0019 on landmarks across 45 cases. Option B remains **available and
-  unverified**. B17 is not cleared - integration and the network-silence
-  observation are still outstanding - and this ADR is not Accepted.
+- **Status:** **Accepted - Option A implemented.** Phase 2.5 (section 11)
+  reimplemented MediaPipe's published pipeline on `ai-edge-litert`, driving the
+  same pinned `face_landmarker.task` weights, and removed the `mediapipe`
+  dependency. Measured against the 1.0.1 oracle across 45 synthetic cases: worst
+  blink error 0.0136, worst landmark error 0.0019, worst head-turn ratio error
+  0.0030, detection agreeing on all 45. The allowlist is now empty and 20
+  fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
+  **zero** external endpoints, each with the observer canary proven and no failed
+  OS query. **B17 is cleared**, with the limitations in section 11 stated. Option
+  B was not needed and remains available and unverified.
 - **Phase 2.5 findings:** [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
 - **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
@@ -257,14 +261,13 @@ Also withdrawn: the claim that YuNet's five points make the head-turn signal
 MediaPipe-free. That equivalence was never demonstrated. The 478-landmark
 turn-ratio calculation (indices 1, 33, 263) stands unchanged.
 
-### Option A - measured as viable, not yet integrated
+### Option A - implemented
 
 The public pipeline was reimplemented from primary source at `v1.0.0`: SSD
 anchors, `WEIGHTED` NMS with score-weighted box/keypoint blending, the exact
 rotation formula `target - atan2(-(y1-y0), x1-x0)`, ROI scale 1.5, the 146-index
-blendshape subset and the 52 names. `ai-edge-litert` 2.2.0 was scanned and shows
-no telemetry strings across 18 binaries - supporting evidence, not proof; only
-the OS-level runtime check can support a no-endpoints claim.
+blendshape subset and the 52 names. It runs on `ai-edge-litert` 2.2.0, driving
+the same pinned `face_landmarker.task` weights.
 
 **A previous revision of this ADR concluded Option A was "contradicted by
 measurement". That conclusion is withdrawn.** It was drawn from a replica that
@@ -275,7 +278,7 @@ with `warpAffine` and a zero border, where the published converter uses
 value-range transform after resampling. A failing replica is evidence about
 that replica, not about the approach.
 
-Two defects were then found and fixed:
+Two defects were found and fixed:
 
 | Fix | Worst blink err | Worst landmark err | Worst blendshape err |
 |---|---|---|---|
@@ -283,18 +286,21 @@ Two defects were then found and fixed:
 | published CPU preprocessing path | 0.01363 | 0.00152 | 0.60527 |
 | + blendshape landmarks denormalized by image size | **0.01363** | **0.00192** | **0.02770** |
 
-The second defect was localised by noticing that blendshape error exploded only
-on non-square images while landmark error stayed below 0.0007;
+The second was localised by noticing that blendshape error exploded only on
+non-square images while landmark error stayed below 0.0007;
 `face_blendshapes_graph.cc` feeds `IMAGE_SIZE` to `LandmarksToTensorCalculator`,
 which scales `X` by image width and `Y` by image height before the blendshape
 model.
 
-Across 45 deterministic synthetic cases the replica now agrees with the oracle
-to 0.0136 (blink), 0.0019 (landmarks), 0.0277 (blendshapes) and 0.0030
-(head-turn ratio, against a 0.045 threshold), with detection agreeing on all 45
-including both no-face cases. A 0.25 px ROI perturbation alone moves the blink
-score by 0.0164, so the residual sits at the pipeline's sub-pixel conditioning
-floor rather than being a further structural difference.
+Across 45 deterministic synthetic cases the replica agrees with the oracle to
+0.0136 (blink), 0.0019 (landmarks), 0.0277 (blendshapes) and 0.0030 (head-turn
+ratio, against a 0.045 threshold), with detection agreeing on all 45 including
+both no-face cases. A 0.25 px ROI perturbation alone moves the blink score by
+0.0164, so the residual sits at the pipeline's sub-pixel conditioning floor
+rather than being a further structural difference. The harness is in
+`scripts/b17_option_a/`; the preprocessing arithmetic is tested against an
+independent implementation in `tests/test_b17_preprocessing.py`, not against
+recorded oracle output.
 
 Two earlier statements are also corrected: the blendshape stage was described as
 "bit-exact ... to five decimals", which is self-contradictory - what was
@@ -304,13 +310,24 @@ was MediaPipe's landmark-derived next-frame ROI, not the detector-produced ROI
 used for the inference being compared, and no ROI here was captured from the
 graph edge.
 
-**What this does not yet show.** The configured thresholds are
-`blink_score_high = 0.40` / `blink_score_low = 0.20`, and MediaPipe itself emits
-at most ~0.21 on procedurally drawn faces. Decision equivalence at the
-configured thresholds is therefore **not demonstrated**, and resolving it with a
-real face is excluded by the project's own constraint against capturing
-biometric data. Integration and the FULL 20-process network-silence observation
-are also outstanding. B17 stays open.
+**Network silence, observed.** With `mediapipe` removed and the allowlist empty,
+20 fresh-process FULL-mode runs of `scripts/check_network_activity.py` - in a
+clean environment with `mediapipe` absent from site-packages entirely - each
+returned exit 0 with the loopback canary observed, 8-11 successful OS queries,
+zero failed queries, no expired deadline, and **zero external endpoints**. Raw
+results: `docs/b17/network_silence_20_runs.json`. Earlier revisions treated the
+absence of telemetry strings in the LiteRT binaries as proof of no endpoints;
+that is downgraded to supporting evidence - this runtime observation is what
+supports the claim.
+
+**What this does not show.** The configured thresholds are
+`blink_score_high = 0.40` / `blink_score_low = 0.20`, and MediaPipe *itself*
+emits at most ~0.21 on procedurally drawn faces, across two eye renderings. So
+decision equivalence **at the configured thresholds is not demonstrated** by the
+synthetic corpus, and resolving that with a real face is excluded by the
+project's own constraint against capturing biometric data. The network check is
+a detector, not a proof of absence: a connection shorter than the poll interval
+could be missed, and it observes `IP:port`, never payload bytes.
 
 ### Option B - available and unverified
 

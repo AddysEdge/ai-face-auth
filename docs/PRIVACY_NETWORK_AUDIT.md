@@ -654,19 +654,23 @@ network-silent requires one of two options, and neither has been selected:
   reproducibility work, maintenance across upstream releases, and a recurring
   obligation to re-verify telemetry absence on every rebuild.
 
-**Updated by Phase 2.5 (2026-08-30):** Option A was implemented as an
-independent reimplementation and is **measured as viable**. An earlier revision
-called it "contradicted by measurement"; that conclusion is **withdrawn**,
-because the replica it rested on did not implement MediaPipe's published CPU
-preprocessing path. With that path implemented, and with the blendshape model's
-landmarks denormalized by image size as the published graph does, the replica
-agrees with the 1.0.1 oracle to 0.0136 on the blink score, 0.0019 on landmarks
-and 0.0030 on the head-turn ratio across 45 synthetic cases, with detection
-agreeing on all 45. Option B remains **available and unverified**. B17 remains
-open: integration and the FULL 20-process network-silence observation have not
-been done, and decision equivalence at the configured 0.40/0.20 thresholds is
-not demonstrated because MediaPipe itself emits at most ~0.21 on procedurally
-drawn faces. Full
+**Resolved by Phase 2.5 (2026-08-30): the behaviour documented above is
+historical.** Option A was implemented. An earlier revision called it
+"contradicted by measurement"; that conclusion is **withdrawn**, because the
+replica it rested on did not implement MediaPipe's published CPU preprocessing
+path. With that path implemented, and with the blendshape model's landmarks
+denormalized by image size as the published graph does, the replica agrees with
+the 1.0.1 oracle to 0.0136 on the blink score, 0.0019 on landmarks and 0.0030 on
+the head-turn ratio across 45 synthetic cases, with detection agreeing on all
+45. The `mediapipe` dependency is removed, the allowlist is empty, and 20
+fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
+**zero** external endpoints, each with the observer canary proven and no failed
+OS query (`docs/b17/network_silence_20_runs.json`). **B17 is cleared.** Option B
+was not needed and remains available and unverified. Two limitations stand:
+decision equivalence at the configured 0.40/0.20 thresholds is not demonstrated,
+because MediaPipe itself emits at most ~0.21 on procedurally drawn faces and a
+real face is excluded by this project's own constraints; and the network check
+is a detector, not a proof of absence. Full
 record: [`PHASE2_5_B17_RESEARCH.md`](PHASE2_5_B17_RESEARCH.md). The trade-off, and a recommendation that is deliberately not applied,
 are in [ADR-0005](adr/0005-mediapipe-telemetry-and-the-offline-claim.md),
 recorded as **Proposed / open** and tracked in

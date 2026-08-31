@@ -1,7 +1,10 @@
 # Phase 2.5: resolving B17 — network-silent liveness
 
-**Status:** in progress. B17 is **not yet cleared**. This document records what has
-been measured, with the corrections listed in section 1 applied.
+**Status:** complete. **B17 is cleared.** The liveness path runs on a
+telemetry-free runtime, the `mediapipe` dependency is gone, the allowlist is
+empty, and 20 fresh-process FULL-mode network checks observed zero external
+endpoints. The corrections listed in section 1 are applied; the limitations in
+section 6 stand.
 
 The blocker, restated from `docs/PHASE2_ACCEPTANCE_CRITERIA.md`:
 
@@ -33,7 +36,7 @@ not measure Option A. Four specific statements are corrected:
 | 1 | Option A is "contradicted by measurement". | **Withdrawn.** One replica failing shows only that *that replica* failed. It is not evidence about Option A as an approach. The replica had a preprocessing defect (section 3) and a blendshape input defect (section 4); with both fixed, agreement improves by roughly an order of magnitude. |
 | 2 | The error "persists with a known-correct ROI". | **Withdrawn.** The ROI used was MediaPipe's *landmark-derived next-frame* ROI, which is not the ROI the graph used for the inference being compared. That is the detector-produced input ROI. No ROI in these experiments was captured from the actual graph edge, so none may be called known-correct. |
 | 3 | "The blendshape stage is bit-exact — agrees to five decimal places." | **Self-contradictory; corrected.** Bit identity and five-decimal agreement are different claims. What was measured is *agreement to five decimal places*. Bit identity was not tested and is not claimed. |
-| 4 | Zero telemetry strings in the LiteRT binaries shows it contacts no endpoints. | **Downgraded to supporting evidence.** A string scan is not proof of absence. Only a healthy OS-level runtime observation — the check in section 7 — can support that claim, and it has not yet been run against the integrated path. |
+| 4 | Zero telemetry strings in the LiteRT binaries shows it contacts no endpoints. | **Downgraded to supporting evidence.** A string scan is not proof of absence. Only a healthy OS-level runtime observation can support that claim; the 20 runs in section 7 are that observation, and they — not the string scan — are what B17 rests on. |
 
 The measurement that motivated this correction is in section 3.
 
@@ -188,24 +191,41 @@ Stated plainly, because they bound what the numbers above support:
 
 ---
 
-## 7. What remains before B17 can be called cleared
+## 7. B17: what was required, and what was observed
 
 Measured agreement is a precondition, not the criterion. B17 requires an
-observed absence of outbound connections from the integrated path:
+observed absence of outbound connections from the integrated path.
 
-- [ ] Integrate the LiteRT provider behind the existing liveness interface,
-      preserving landmark indices 1 / 33 / 263 and leaving thresholds unchanged.
-- [ ] Remove the `mediapipe` dependency and every import of it.
-- [ ] `scripts/check_network_activity.py` in FULL model mode, ≥20 fresh
-      processes, empty allowlist, each requiring canary YES, successful
-      queries, zero failed queries, no expired deadline, zero external
-      endpoints, exit 0.
-- [ ] CI running an authoritative FULL model check.
-- [ ] ADR-0005 moved from *Proposed* to *Accepted* with the evidence.
+| Requirement | State |
+|---|---|
+| LiteRT provider integrated behind the existing liveness interface | Done. `challenge_response.py` drives `LiteRtFaceLandmarker`. Landmark indices 1 / 33 / 263, both signals, the decision functions and all three thresholds are unchanged. |
+| `mediapipe` dependency and imports removed | Done. `pyproject.toml` pins `ai-edge-litert==2.2.0`; no runtime module imports `mediapipe`. The only remaining import is the oracle leg of the comparison harness, which is not a runtime dependency. |
+| Allowlist empty | Done. `scripts/network_allowlist.json` has `"allowed": []`. |
+| 20 fresh-process FULL-mode checks, all clean | Done. See below. |
+| CI running an authoritative FULL model check | Done. CI fetches the pinned weights before pytest, so the realmodel-marked tests run rather than skip, then runs the check and asserts `mode == "full"` explicitly. |
+| ADR-0005 Accepted with the evidence | Done. |
 
-Until those are done and their output recorded here, **B17 stays open.**
+### The 20 runs
 
----
+Environment: a clean virtualenv built from the new pinned dependency set, with
+`mediapipe` absent from `site-packages` entirely and `ai-edge-litert==2.2.0`
+present. Each run is a fresh process.
+
+| Criterion | Result |
+|---|---|
+| Exit code 0 | 20 / 20 |
+| Mode `full` | 20 / 20 |
+| Loopback canary observed | 20 / 20 |
+| Successful OS queries | 8-11 per run, never 0 |
+| Failed OS queries | 0 across all 20 |
+| Command deadline expired | never |
+| **External endpoints observed** | **0 across all 20 runs** |
+
+Raw per-run records: [`docs/b17/network_silence_20_runs.json`](b17/network_silence_20_runs.json).
+
+The canary and the poll counts are what keep that zero from being vacuous: a
+broken observer would report zero connections too, which is exactly how this
+check once fooled itself.
 
 ## 8. Reproducing this
 
@@ -226,6 +246,6 @@ small machine-readable results file are.
 
 | Item | State |
 |---|---|
-| **B17** | **Open.** Preprocessing replication measured; integration and network verification not yet done. |
-| **ADR-0005** | Still *Proposed*. Option A is measured and viable, no longer contradicted; Option B remains available and unverified. |
-| **Issue #6 / PR #9 / Phase 2.5 milestone** | Open. |
+| **B17** | **Cleared**, with the section 6 limitations stated. |
+| **ADR-0005** | *Accepted* - Option A implemented. Option B was not needed and remains available and unverified. |
+| **Phase 3 entry** | B17 no longer blocks it. |

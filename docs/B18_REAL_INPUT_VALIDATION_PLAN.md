@@ -170,6 +170,36 @@ Purpose: prove the harness and the analysis work before anyone is recorded.
 **Requires no D-decisions except D1.** Clears nothing; it de-risks Stage 1 so
 that a participant's time is not wasted on a broken harness.
 
+#### Stage 0 tooling — implemented
+
+The validator and analyser exist in `scripts/b18_stage0/`:
+
+```
+python -m scripts.b18_stage0.cli validate MANIFEST [MANIFEST ...]
+python -m scripts.b18_stage0.cli analyse  MANIFEST [MANIFEST ...]     [--out results.json] [--report report.md]
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | every manifest valid; analysis completed |
+| 1 | at least one manifest failed validation — findings printed, one per line, each naming the failing JSON path |
+| 2 | the command could not run: missing/unreadable file, unparseable JSON, refused output path, write failure |
+
+`validate` enforces `docs/b18/forms/TRIAL_MANIFEST_SCHEMA.md` and **fails
+closed**: a manifest that cannot be fully validated is rejected whole, never
+analysed in part, and no trial is silently dropped. `analyse` recomputes every
+derived quantity rather than trusting the manifest's own summaries.
+
+Its output is **deterministic** — identical input yields byte-identical JSON and
+Markdown, with no timestamp anywhere — so that a reproduction check (§13) is
+meaningful. `scripts/b18_stage0/cleanup.py` rehearses the workspace-deletion
+step with guard rails, and makes no secure-erasure claim (§12.3).
+
+**The tooling has been exercised only against invented manifests in
+`scripts/b18_stage0/synthetic.py`.** There is no real-input evidence, no
+participant has been recorded, and none of this clears B18 or authorizes
+capture. `analyse` has no code path that can emit a clearance.
+
 ### Stage 1 — owner-only operational pilot
 
 Purpose: confirm the replacement runtime behaves sanely on real input at all,

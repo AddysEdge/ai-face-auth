@@ -37,3 +37,14 @@ room for a documentation folder.
 
 If you are reading this because you are about to start capturing: stop, and
 check plan section 16 first.
+
+## Stage 0 tooling
+
+`scripts/b18_stage0/` implements the Stage 0 dry run: manifest validation
+against `forms/TRIAL_MANIFEST_SCHEMA.md`, deterministic aggregate analysis, and
+a guarded rehearsal of the workspace-deletion step. See the plan's Stage 0
+section for commands and exit codes.
+
+It has run only against the invented manifests in
+`scripts/b18_stage0/synthetic.py`. **No real input exists, and the tooling
+cannot clear B18** - only the recorded security review can.

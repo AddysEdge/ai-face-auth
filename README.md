@@ -101,7 +101,10 @@ five, B17, is now cleared:
   false-reject rates or spoof resistance, and the corpus provably cannot reach
   the configured `blink_score_high` of 0.40 - MediaPipe itself only reaches
   about 0.21 on drawn faces. **OPEN**, and not satisfiable by more synthetic
-  measurement.
+  measurement. A proposed protocol and data-handling plan exists in
+  [`docs/B18_REAL_INPUT_VALIDATION_PLAN.md`](docs/B18_REAL_INPUT_VALIDATION_PLAN.md),
+  awaiting an owner decision - the plan itself clears nothing, and no camera or
+  real-face testing may begin before that decision is recorded.
   The other three above are still open too.
 
 **The rest are not optional.** They include the AD + PKI lab (**B4**),

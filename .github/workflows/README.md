@@ -116,10 +116,13 @@ in `pyproject.toml`, so Dependabot surfaces a release or advisory as a PR that
 must pass the full matrix before it can merge - it is a review trigger, not a
 silent updater.
 
-CV/ML dependencies are grouped (`opencv-*`, `onnxruntime*`, `mediapipe`,
-`numpy`) because they constrain each other and MediaPipe pulls
-`opencv-contrib-python` transitively (`docs/RESEARCH.md` section 18); bumping
-them one at a time produces conflicting PRs.
+CV/ML dependencies are grouped (`opencv-*`, `onnxruntime*`, `ai-edge-litert`,
+`numpy`) because they constrain each other (`docs/RESEARCH.md` section 18);
+bumping them one at a time produces conflicting PRs. `ai-edge-litert` replaced
+`mediapipe` in Phase 2.5, and a bump to it changes the runtime the liveness
+path executes on - so its PR must re-run the B17 network check and the Option A
+oracle comparison in `scripts/b17_option_a/`, not be taken on version number
+alone.
 
 The native project has no third-party dependencies, so there is no ecosystem
 registered for it. Add one here at the same time as adding the dependency.

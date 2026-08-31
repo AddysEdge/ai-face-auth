@@ -22,8 +22,9 @@ a net loss.
 
 ## Python setup (3.12)
 
-Python is pinned to 3.12 in `pyproject.toml`. The CV/ML stack here - MediaPipe
-especially - is most reliably supported there (`docs/RESEARCH.md`).
+Python is pinned to 3.12 in `pyproject.toml`. The CV/ML stack here is most
+reliably supported there, and `ai-edge-litert` ships a `cp312` wheel
+(`docs/RESEARCH.md`).
 
 ```powershell
 uv venv --python 3.12 .venv

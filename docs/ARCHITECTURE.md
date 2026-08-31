@@ -35,8 +35,8 @@ handles a Windows password.
                       |
                  FaceQualityChecker       (quality/heuristic_quality.py)
                       |
-                 LivenessProvider         (liveness/challenge_response.py - MediaPipe blink/head-turn
-                      |                    challenge; optional passive_onnx.py backend via composite.py)
+                 LivenessProvider         (liveness/challenge_response.py - blink/head-turn challenge on
+                      |                    litert_landmarker.py; optional passive_onnx.py via composite.py)
                  FaceEmbeddingModel       (embedding/sface_embedding.py - SFace, ONNX Runtime)
                       |
                  SimilarityEngine         (similarity/cosine_similarity.py)
@@ -75,7 +75,7 @@ implementations - every other module depends only on the interfaces in
 | `CameraProvider` | Frame source | `OpenCvCameraProvider` (also: `ArrayFeedCameraProvider` for replay/tests) |
 | `FaceDetector` | Locate faces + 5-pt landmarks | `YuNetFaceDetector` |
 | `FaceQualityChecker` | Reject unusable frames | `HeuristicFaceQualityChecker` |
-| `LivenessProvider` | Challenge-response / passive spoof check | `MediaPipeChallengeResponseLiveness` (BLINK-only by default - see `docs/THREAT_MODEL.md` §2 for why head-turn was disabled after live testing), optionally composed with `PassiveOnnxSpoofLiveness` via `CompositeLivenessProvider` |
+| `LivenessProvider` | Challenge-response / passive spoof check | `LiteRtChallengeResponseLiveness` (BLINK-only by default - see `docs/THREAT_MODEL.md` §2 for why head-turn was disabled after live testing), optionally composed with `PassiveOnnxSpoofLiveness` via `CompositeLivenessProvider` |
 | `FaceEmbeddingModel` | Face → normalized vector | `SFaceEmbeddingModel` |
 | `SimilarityEngine` | Compare probe vs. stored template | `CentroidCosineSimilarityEngine` (also: `MaxSampleCosineSimilarityEngine`) |
 | `AuthenticationPolicy` | Similarity → GRANT/DENY | `ThresholdAuthenticationPolicy` |

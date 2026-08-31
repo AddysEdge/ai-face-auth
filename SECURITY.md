@@ -130,7 +130,15 @@ offline" and that was false.
 embedding, or enrolled template leaves the machine, in any phase. That
 commitment is absolute and appears in the never-do list below.
 
-**The process makes no outbound network connections.** It did not always. The
+**The process makes no outbound network connections.** This is about network
+silence only. The runtime that computes the liveness inputs was replaced in
+Phase 2.5, and its real-input detection quality - false-accept and false-reject
+behaviour, spoof resistance, and the configured 0.40/0.20 blink thresholds
+actually being exercised - has **not** been validated. That is Phase 3 entry
+criterion **B18**, and it is open. Do not read the paragraphs below as saying
+the liveness control is known to work as well as it did before.
+
+It did not always make no connections. The
 bundled MediaPipe binary opened a TLS connection to `play.googleapis.com` and
 uploaded usage telemetry - MediaPipe version, platform, solution name, graph
 name, latency and invocation counts - when a MediaPipe session was torn down.

@@ -323,7 +323,7 @@ The replacement wording used throughout is deliberately uniform:
 | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` | New Phase 3 entry criterion **B17**, and the identifier list updated to include it |
 | `docs/PHASE2_SECURITY_REVIEW.md` section 3.4 | The "no network access" requirement is restated as unchanged **and** flagged as a blocker the current dependency set cannot meet |
 | `docs/adr/0002-...md` section 5.3 | The "Network: None. Deny all outbound." row now points at B17 |
-| `README.md`, `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `docs/ACCEPTANCE_AUDIT.md` | Every current-facing Phase 3 gate reference now reads *"every Part B entry criterion, including B4a, B16, and B17"*. Statements that `B1-B15` omits "two" criteria corrected to three. Explicitly historical Phase 2 records were left as they are. |
+| `README.md`, `CONTRIBUTING.md`, `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/feature_request.yml`, `docs/ACCEPTANCE_AUDIT.md` | Every current-facing Phase 3 gate reference now reads *"every Part B entry criterion, including B4a, B16, and B17"*. Statements that `B1-B15` omits "two" criteria corrected to three. Explicitly historical Phase 2 records were left as they are. **Superseded 2026-08-31:** B18 was added, so the current shorthand is *"including B4a, B16, B17, and B18"* and `B1-B15` now omits four. |
 
 ### 3.4 What was deliberately left alone
 

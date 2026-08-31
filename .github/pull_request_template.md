@@ -107,7 +107,7 @@ these links will be closed.
 
 - [ ] Owner's recorded product-scope decision accepting the AD-domain-only
       scope (B7): <!-- link -->
-- [ ] Evidence for **every Part B entry criterion, including B4a, B16, and B17**, in
+- [ ] Evidence for **every Part B entry criterion, including B4a, B16, B17, and B18**, in
       `docs/PHASE2_ACCEPTANCE_CRITERIA.md` (the list is not a contiguous
       range): <!-- link -->
 - [ ] Disposable-VM snapshot/rollback policy (**B5**) and rehearsed recovery

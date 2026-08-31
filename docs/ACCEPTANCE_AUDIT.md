@@ -387,7 +387,7 @@ git diff --stat main...phase-2-security-foundation -- src tests scripts
 | CONTRIBUTING.md with setup, commands, boundaries, prohibitions, privacy, PR expectations | `CONTRIBUTING.md` |
 | PR template and issue templates | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` |
 | `.gitignore` expanded for build output, binaries, symbols, keys, certs, registry exports, runtime state, biometric data, logs, model weights, IDE files | `.gitignore` |
-| Phase 3 entry criteria defined | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - every criterion, including B4a, B16, and B17 |
+| Phase 3 entry criteria defined | `docs/PHASE2_ACCEPTANCE_CRITERIA.md` Part B - every criterion, including B4a, B16, B17, and B18 |
 
 ### What Phase 2 deliberately did NOT do
 

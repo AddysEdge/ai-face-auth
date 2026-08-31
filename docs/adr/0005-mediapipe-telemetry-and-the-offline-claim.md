@@ -8,8 +8,18 @@
   0.0030, detection agreeing on all 45. The allowlist is now empty and 20
   fresh-process FULL-mode runs of `scripts/check_network_activity.py` observed
   **zero** external endpoints, each with the observer canary proven and no failed
-  OS query. **B17 is cleared**, with the limitations in section 11 stated. Option
-  B was not needed and remains available and unverified.
+  OS query. **B17 is cleared** - see the scope note below. Option B was not
+  needed and remains available and unverified.
+- **Scope, stated precisely:** this ADR resolves **B17, network silence, and
+  nothing else.** It does **not** assert that the replacement has equivalent
+  FAR/FRR or spoof resistance. Agreement with the old runtime was measured on a
+  synthetic corpus that provably cannot reach the configured
+  `blink_score_high` of 0.40, because MediaPipe itself emits at most ~0.21 on
+  procedurally drawn faces. Real-input validation of the liveness control is
+  tracked as **B18** ([issue #14](https://github.com/AddysEdge/ai-face-auth/issues/14)), which is **OPEN**.
+- **Post-merge correction (2026-08-31):** an audit of the merged code found the
+  landmark model's face-presence gate missing from the replacement, and the
+  oracle comparison non-enforcing. Both are fixed; see section 11.
 - **Phase 2.5 findings:** [`docs/PHASE2_5_B17_RESEARCH.md`](../PHASE2_5_B17_RESEARCH.md).
 - **Tracked in:** [issue #6](https://github.com/AddysEdge/ai-face-auth/issues/6).
 - **Date:** 2026-08-25
@@ -320,14 +330,46 @@ absence of telemetry strings in the LiteRT binaries as proof of no endpoints;
 that is downgraded to supporting evidence - this runtime observation is what
 supports the claim.
 
-**What this does not show.** The configured thresholds are
+**Post-merge correction (2026-08-31).** An audit of the merged code found two
+defects in the work supporting this decision. Neither changes the
+network-silence result - that is an OS-level observation of connections, and is
+independent of landmark correctness - but both are corrected here.
+
+*The face-presence gate was missing.* `face_landmarks_detector_graph.cc` splits
+the landmark model's outputs into landmarks and a scalar presence logit
+(`kFaceLandmarksOutputTensorsNum = 2`, so presence is at declared output index
+1), sigmoids it, thresholds it at `min_detection_confidence` (0.5) with
+`ThresholdingCalculator` - which compares with `>`, strictly - and gates both
+the projected landmarks and the blendshapes behind that flag. The replica
+ignored the presence output entirely and accepted every crop the detector
+proposed: a fail-open gate in a security control. It is now implemented, with
+the shipped model's three-output layout (`Identity` landmarks, `Identity_1`
+presence, `Identity_2` unused by the graph) validated at load. A corpus case,
+`presence_gate_reject`, makes the detector fire at 0.63 while presence comes
+back at about -15; MediaPipe returns no face for it, and now so does the
+replica.
+
+*The oracle comparison was non-enforcing.* It exited on detection agreement
+alone, so no magnitude of landmark, blink, blendshape or turn-ratio error could
+fail it - and CI never ran it. Tolerances are now declared in the harness and
+enforced by its exit status, and a dedicated CI job runs the comparison against
+a `mediapipe==1.0.1` oracle in a separate, deliberately non-network-silent
+environment.
+
+**What this does not show - B18.** The configured thresholds are
 `blink_score_high = 0.40` / `blink_score_low = 0.20`, and MediaPipe *itself*
 emits at most ~0.21 on procedurally drawn faces, across two eye renderings. So
 decision equivalence **at the configured thresholds is not demonstrated** by the
 synthetic corpus, and resolving that with a real face is excluded by the
-project's own constraint against capturing biometric data. The network check is
-a detector, not a proof of absence: a connection shorter than the poll interval
-could be missed, and it observes `IP:port`, never payload bytes.
+project's own constraint against capturing biometric data. Synthetic agreement
+on operator outputs is **not** evidence of equivalent FAR/FRR or of spoof
+resistance, and nothing in this ADR should be read as claiming otherwise. That
+question is Phase 3 entry criterion **B18**, which is **OPEN**. B17 - network
+silence - is what this ADR clears.
+
+The network check is also a detector, not a proof of absence: a connection
+shorter than the poll interval could be missed, and it observes `IP:port`,
+never payload bytes.
 
 ### Option B - available and unverified
 

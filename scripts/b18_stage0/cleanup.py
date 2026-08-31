@@ -1,7 +1,7 @@
 """Stage 0 rehearsal of the workspace cleanup step.
 
-This exists to prove the *procedure* runs before it is ever pointed at real
-material - plan §5 Stage 0, "verify ... the deletion procedure end to end".
+This proves the *procedure* runs before it is ever pointed at real material -
+plan §5 Stage 0, "verify ... the deletion procedure end to end".
 
 What this is not
 ----------------
@@ -14,8 +14,18 @@ retain independent copies. Plan §12.3 ranks the approaches that *are*
 defensible; encryption with key destruction leads that list, and none of them
 is implemented here.
 
-The guard rails below exist because a deletion helper is exactly the kind of
-tool that, pointed at the wrong path once, destroys something irreplaceable.
+The safety model
+----------------
+An earlier revision let the caller declare any directory a "workspace" and then
+delete inside it. Passing ``Path.home()`` therefore made ``AppData`` and
+``Documents`` legal targets - a real defect, reproduced before this rewrite.
+
+Deletion is now **capability-based**, not argument-based. The only thing that
+can be removed is a directory this tool created beneath the system temporary
+directory, carrying the marker and capability token that
+:mod:`scripts.b18_stage0.workspace` wrote. No string a caller passes can
+manufacture that. A path outside such a workspace is refused whatever
+``workspace_root`` is claimed alongside it.
 """
 
 from __future__ import annotations
@@ -24,7 +34,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from scripts.b18_stage0.workspace import (
+    REPO_ROOT,
+    WorkspaceError,
+    contains_reparse_point,
+    system_temp_root,
+    verify_workspace,
+)
 
 DISCLAIMER = (
     "Filesystem deletion is NOT proof of physical erasure. On SSDs, wear "
@@ -38,26 +54,35 @@ class UnsafeTarget(Exception):
 
 
 def _forbidden_paths() -> set[Path]:
-    """Paths that must never be a deletion target, whatever the caller passes."""
-    forbidden = {REPO_ROOT, Path.home().resolve(), Path.cwd().resolve()}
+    """Paths that must never be a deletion target, whatever a caller passes."""
+    home = Path.home().resolve()
+    forbidden = {REPO_ROOT, home, Path.cwd().resolve(), system_temp_root()}
     forbidden |= set(REPO_ROOT.parents)
-    forbidden |= set(Path.home().resolve().parents)
+    forbidden |= set(home.parents)
+    # Named explicitly because these were the paths the previous model accepted.
+    for name in ("AppData", "Documents", "Desktop", "Downloads", "Pictures", "Videos"):
+        forbidden.add(home / name)
     return forbidden
 
 
-def assert_safe_target(target: Path, workspace_root: Path) -> Path:
-    """Resolve and vet a deletion target. Raises rather than guessing.
+def assert_safe_target(target: Path, workspace: Path) -> Path:
+    """Vet a deletion target against a tool-created workspace.
 
-    ``target`` must be a real directory strictly inside ``workspace_root``, and
-    ``workspace_root`` must itself be somewhere disposable that the caller
-    created. Symlinks are refused outright: following one would let a link
-    inside the workspace redirect the delete anywhere on the machine.
+    ``workspace`` must pass :func:`verify_workspace` - it is not enough for the
+    caller to say a directory is a workspace. ``target`` must then be a real
+    directory strictly inside it, free of links at every level.
     """
-    if target.is_symlink():
-        raise UnsafeTarget(f"refusing a symlink target: {target}")
+    try:
+        verified_workspace = verify_workspace(workspace)
+    except WorkspaceError as exc:
+        raise UnsafeTarget(
+            f"refusing: {workspace} is not a tool-created Stage 0 workspace ({exc})"
+        ) from exc
+
+    if contains_reparse_point(target) is not None:
+        raise UnsafeTarget(f"refusing a symlink, junction or reparse point at or below: {target}")
 
     resolved = target.resolve()
-    root = workspace_root.resolve()
 
     if not resolved.is_absolute():
         raise UnsafeTarget(f"refusing a non-absolute target: {target}")
@@ -65,20 +90,21 @@ def assert_safe_target(target: Path, workspace_root: Path) -> Path:
         raise UnsafeTarget(f"refusing a filesystem root: {resolved}")
     if resolved in _forbidden_paths():
         raise UnsafeTarget(
-            f"refusing a protected path (repository root, home, cwd or an "
-            f"ancestor of one): {resolved}"
-        )
-    if resolved == root:
-        raise UnsafeTarget(
-            f"refusing the workspace root itself; delete a subdirectory of it: {resolved}"
-        )
-    if root not in resolved.parents:
-        raise UnsafeTarget(
-            f"refusing a target outside the declared workspace: {resolved} "
-            f"is not inside {root}"
+            f"refusing a protected path (repository, home, a home data folder, "
+            f"cwd, the temp root, or an ancestor of one): {resolved}"
         )
     if resolved == REPO_ROOT or REPO_ROOT in resolved.parents:
         raise UnsafeTarget(f"refusing a target inside the repository: {resolved}")
+    if resolved == verified_workspace:
+        raise UnsafeTarget(
+            f"refusing the workspace root here; use remove_workspace_root() to "
+            f"dispose of the whole workspace: {resolved}"
+        )
+    if verified_workspace not in resolved.parents:
+        raise UnsafeTarget(
+            f"refusing a target outside the verified workspace: {resolved} is not "
+            f"inside {verified_workspace}"
+        )
     if not resolved.exists():
         raise UnsafeTarget(f"refusing a target that does not exist: {resolved}")
     if not resolved.is_dir():
@@ -86,20 +112,7 @@ def assert_safe_target(target: Path, workspace_root: Path) -> Path:
     return resolved
 
 
-def remove_workspace(target: Path, workspace_root: Path) -> dict[str, Any]:
-    """Remove a vetted Stage 0 workspace directory and report what happened.
-
-    Returns a record suitable for pasting into
-    ``docs/b18/forms/RETENTION_DELETION_LOG.md`` - including the honest
-    statement about what deletion does and does not achieve.
-    """
-    resolved = assert_safe_target(target, workspace_root)
-
-    removed = sorted(
-        str(p.relative_to(resolved)) for p in resolved.rglob("*") if p.is_file()
-    )
-    shutil.rmtree(resolved)
-
+def _record(resolved: Path, removed: list[str]) -> dict[str, Any]:
     return {
         "target": str(resolved),
         "files_removed": len(removed),
@@ -108,3 +121,35 @@ def remove_workspace(target: Path, workspace_root: Path) -> dict[str, Any]:
         "secure_erasure_claimed": False,
         "disclaimer": DISCLAIMER,
     }
+
+
+def _entries(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root).as_posix()) for p in root.rglob("*") if p.is_file())
+
+
+def remove_workspace(target: Path, workspace: Path) -> dict[str, Any]:
+    """Remove a vetted directory *inside* a tool-created workspace."""
+    resolved = assert_safe_target(target, workspace)
+    removed = _entries(resolved)
+    shutil.rmtree(resolved)
+    return _record(resolved, removed)
+
+
+def remove_workspace_root(workspace: Path) -> dict[str, Any]:
+    """Dispose of an entire tool-created workspace.
+
+    Separated from :func:`remove_workspace` deliberately: removing the root is a
+    different, larger act than removing a run inside it, and the API says which
+    one the caller meant rather than inferring it.
+    """
+    try:
+        verified = verify_workspace(workspace)
+    except WorkspaceError as exc:
+        raise UnsafeTarget(
+            f"refusing: {workspace} is not a tool-created Stage 0 workspace ({exc})"
+        ) from exc
+    if verified in _forbidden_paths():
+        raise UnsafeTarget(f"refusing a protected path: {verified}")
+    removed = _entries(verified)
+    shutil.rmtree(verified)
+    return _record(verified, removed)

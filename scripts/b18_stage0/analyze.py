@@ -1,20 +1,25 @@
-"""Deterministic aggregate analysis of B18 session manifests.
+"""Deterministic aggregate analysis of B18 Stage 0 session manifests.
 
-Consumes validated manifests and produces a machine-readable result plus a
-reviewable Markdown report. Every number is recomputed from the trial records;
-nothing stated in a manifest is trusted as a summary.
+Consumes validated, mutually-comparable manifests and produces a
+machine-readable result plus a reviewable Markdown report. Every number is
+recomputed from the trial records; nothing a manifest states as a summary is
+trusted.
 
-Two properties this module treats as load-bearing:
+Three properties are load-bearing.
 
-**Determinism.** Identical input produces byte-identical output. There is no
-timestamp anywhere in the result, and every iteration is over a sorted sequence.
-A report that changed between runs could not be used to check that an analysis
-was reproduced, which plan §13 requires.
+**Determinism.** Identical input produces byte-identical output. No timestamp
+appears anywhere and every iteration is over a sorted sequence, so the
+reproduction check plan §13 requires actually means something.
 
-**It cannot clear B18.** There is no code path that emits a pass, a clearance,
-or an approval. The analysis reports numbers and their limitations; only the
-recorded human security review in `docs/b18/forms/SECURITY_REVIEW_CHECKLIST.md`
-can clear the criterion.
+**Attack types are never pooled into a headline number.** S1-S3 (printed photo
+and still display) and S4 (video replay) fail for different reasons and are
+expected to behave differently - replay is a known unmitigated gap. Averaging
+them manufactures a moderate-looking figure that describes no real attack. The
+primary still-image margin is computed over S1-S3 only; replay is reported
+beside it, never inside it.
+
+**It cannot clear B18.** No code path emits a pass, a clearance, or an
+approval. Only the recorded human security review can clear the criterion.
 """
 
 from __future__ import annotations
@@ -23,17 +28,28 @@ import math
 import statistics
 from typing import Any
 
+from scripts.b18_stage0.corpus import require_aggregatable, thresholds
 from scripts.b18_stage0.schema import (
     GENUINE_BLINK_TYPES,
     GENUINE_NON_BLINK_TYPES,
+    OTHER_SPOOF_TYPES,
+    REPLAY_SPOOF_TYPES,
     SPOOF_TYPES,
+    STILL_SPOOF_TYPES,
 )
 
-Z_95 = 1.959963984540054  # two-sided 95%
+Z_95 = 1.959963984540054
 ALPHA = 0.05
-NEAR_MISS_WINDOW = 0.05  # plan §9.3: count spoof maxima within this of the high threshold
 
-# Reproduced verbatim in every artefact this module writes.
+#: A rejected spoof is a "near miss" only when its peak sat just *below* the
+#: threshold. A peak at or above it is not a near miss - it is an attack that
+#: crossed the decision boundary, and is reported as such.
+NEAR_MISS_WINDOW = 0.05
+
+#: Boundary comparisons run on values that survived a JSON round trip, so an
+#: exact ``==`` would be brittle.
+BOUNDARY_TOLERANCE = 1e-9
+
 STAGE0_BANNER = (
     "SYNTHETIC STAGE 0 EVIDENCE ONLY - B18 REMAINS OPEN. "
     "No real-input validation occurred. No population or security-performance "
@@ -48,13 +64,16 @@ CLUSTERING_WARNING = (
     "bounds, they do not establish generalisation, and they certify nothing."
 )
 
+POOLING_REFUSAL = (
+    "FAR is reported per attack type and is deliberately NOT pooled. S1-S3 "
+    "(printed photo, still display) and S4 (video replay) fail by different "
+    "mechanisms, and replay is a known unmitigated gap - averaging them produces "
+    "a number that describes no real attack and must not inform a B18 decision."
+)
+
 
 def wilson_interval(successes: int, trials: int, z: float = Z_95) -> tuple[float, float] | None:
-    """Wilson score interval. ``None`` when there is no denominator.
-
-    Preferred over the normal approximation because it stays inside [0, 1] and
-    behaves at small n and at rates near 0 - which is where this study lives.
-    """
+    """Wilson score interval. ``None`` when there is no denominator."""
     if trials <= 0:
         return None
     p = successes / trials
@@ -65,26 +84,28 @@ def wilson_interval(successes: int, trials: int, z: float = Z_95) -> tuple[float
 
 
 def zero_event_upper_bound(trials: int, alpha: float = ALPHA) -> float | None:
-    """One-sided 95% upper bound when zero events were observed.
+    """Exact one-sided 95% upper bound when zero events were observed.
 
-    Exact form ``1 - alpha**(1/n)``; the familiar "rule of three" (3/n) is its
-    approximation. Reported instead of "0%", which would assert a certainty the
-    data cannot support.
+    ``1 - alpha**(1/n)``; the familiar "rule of three" is its approximation.
+    Reported instead of "0%", which would assert a certainty the data lacks.
     """
     if trials <= 0:
         return None
     return 1.0 - alpha ** (1.0 / trials)
 
 
-def _rate(numerator: int, denominator: int) -> dict[str, Any]:
-    """A rate always travels with its counts and its interval."""
+def _rate(numerator: int, denominator: int, *, participants: int, excluded: int) -> dict[str, Any]:
+    """A rate never travels alone: counts, interval, scope and basis ride with it."""
     entry: dict[str, Any] = {
         "numerator": numerator,
         "denominator": denominator,
         "rate": None if denominator == 0 else round(numerator / denominator, 6),
         "wilson_95": None,
         "zero_event_upper_bound_95": None,
+        "participants": participants,
+        "excluded_trials_in_scope": excluded,
         "basis": "descriptive, trial-level",
+        "not_a_population_rate": True,
     }
     interval = wilson_interval(numerator, denominator)
     if interval is not None:
@@ -107,164 +128,176 @@ def _distribution(values: list[float]) -> dict[str, Any]:
     }
 
 
-def _valid_trials(session: dict) -> list[dict]:
-    """Excluded trials enter neither a numerator nor a denominator."""
+def _valid(session: dict) -> list[dict]:
     return [t for t in session["trials"] if t.get("valid") is True]
 
 
-def _thresholds(sessions: list[dict]) -> tuple[float, float, list[str]]:
-    """Thresholds come from the manifests, and must agree across them."""
-    notes: list[str] = []
-    pairs = sorted(
-        {
-            (
-                float(s["provenance"]["liveness_config"]["blink_score_high"]),
-                float(s["provenance"]["liveness_config"]["blink_score_low"]),
-            )
-            for s in sessions
-        }
-    )
-    if len(pairs) != 1:
-        notes.append(
-            f"Sessions disagree on thresholds: {pairs}. Rates computed against "
-            f"different thresholds are not comparable; the first pair is used and "
-            f"this disagreement must be resolved before the report is relied on."
-        )
-    return pairs[0][0], pairs[0][1], notes
+def _of_types(trials: list[dict], types: tuple[str, ...]) -> list[dict]:
+    return [t for t in trials if t["intended_type"] in types]
 
 
-def analyse(sessions: list[dict]) -> dict[str, Any]:
-    """Aggregate analysis. Input must already be schema-valid."""
-    if not sessions:
-        raise ValueError("no sessions to analyse")
+def _maxima(trials: list[dict]) -> list[float]:
+    return [float(t["max_blink_score"]) for t in trials if t.get("max_blink_score") is not None]
 
-    ordered_sessions = sorted(sessions, key=lambda s: (s["participant_id"], s["session_id"]))
-    high, low, threshold_notes = _thresholds(ordered_sessions)
 
-    participants = sorted({s["participant_id"] for s in ordered_sessions})
-    session_ids = sorted({s["session_id"] for s in ordered_sessions})
-    cameras = sorted({s["provenance"]["camera_label"] for s in ordered_sessions})
-
-    attempted = sum(len(s["trials"]) for s in ordered_sessions)
-    all_valid = [t for s in ordered_sessions for t in _valid_trials(s)]
-    excluded_trials = [
-        t for s in ordered_sessions for t in s["trials"] if t.get("valid") is not True
+def _margin_block(trials: list[dict], high: float, label: str, note: str) -> dict[str, Any]:
+    """Margin analysis for one coherent family of attacks."""
+    maxima = _maxima(trials)
+    rejected_maxima = [
+        float(t["max_blink_score"]) for t in trials
+        if t["attempt_outcome"] == "rejected" and t.get("max_blink_score") is not None
     ]
+    observed = max(maxima) if maxima else None
+    # Near miss: below the threshold, but within the window of it. A peak at or
+    # above the threshold is a crossing, not a near miss.
+    near_miss = [
+        m for m in rejected_maxima
+        if 0.0 <= high - m <= NEAR_MISS_WINDOW + BOUNDARY_TOLERANCE
+    ]
+    crossings = [m for m in maxima if m >= high - BOUNDARY_TOLERANCE]
+    return {
+        "scope": label,
+        "note": note,
+        "high_threshold": high,
+        "trials": len(trials),
+        "max_blink_distribution": _distribution(maxima),
+        "observed_max": None if observed is None else round(observed, 6),
+        "margin_to_high": None if observed is None else round(high - observed, 6),
+        "near_misses_within_0_05_below_high": len(near_miss),
+        "threshold_crossings_at_or_above_high": len(crossings),
+        "near_miss_definition": "rejected trial with 0 <= high - max(blink_score) <= 0.05",
+    }
+
+
+def analyse(sessions: list[dict], paths: list | None = None) -> dict[str, Any]:
+    """Aggregate analysis. Sessions must already be schema-valid.
+
+    Cross-session comparability is enforced here, before any number is computed:
+    duplicates, conflicting thresholds, or differing code/model/dependencies
+    raise rather than producing a note beside a wrong aggregate.
+    """
+    require_aggregatable(list(paths or []), sessions)
+    high, low = thresholds(sessions)
+
+    ordered = sorted(sessions, key=lambda s: (s["participant_id"], s["session_id"]))
+    participants = sorted({s["participant_id"] for s in ordered})
+    session_ids = sorted({s["session_id"] for s in ordered})
+    cameras = sorted({s["provenance"]["camera_label"] for s in ordered})
+
+    attempted = sum(len(s["trials"]) for s in ordered)
+    all_valid = [t for s in ordered for t in _valid(s)]
+    excluded = [t for s in ordered for t in s["trials"] if t.get("valid") is not True]
 
     exclusions: dict[str, int] = {}
-    for trial in excluded_trials:
+    for trial in excluded:
         reason = trial.get("exclusion_reason") or "unspecified"
         exclusions[reason] = exclusions.get(reason, 0) + 1
 
-    def group(trials: list[dict], types: tuple[str, ...]) -> list[dict]:
-        return [t for t in trials if t["intended_type"] in types]
+    n_participants = len(participants)
+    n_excluded = len(excluded)
 
-    def frr(trials: list[dict]) -> dict[str, Any]:
-        genuine = group(trials, GENUINE_BLINK_TYPES)
+    def frr(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
+        genuine = _of_types(trials, GENUINE_BLINK_TYPES)
         rejected = sum(1 for t in genuine if t["attempt_outcome"] == "rejected")
-        return _rate(rejected, len(genuine))
+        return _rate(rejected, len(genuine), participants=people, excluded=drops)
 
-    def far(trials: list[dict], types: tuple[str, ...]) -> dict[str, Any]:
-        spoofs = group(trials, types)
-        accepted = sum(1 for t in spoofs if t["attempt_outcome"] == "accepted")
-        return _rate(accepted, len(spoofs))
-
-    def correct_rejection(trials: list[dict]) -> dict[str, Any]:
-        non_blink = group(trials, GENUINE_NON_BLINK_TYPES)
+    def correct_rejection(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
+        non_blink = _of_types(trials, GENUINE_NON_BLINK_TYPES)
         rejected = sum(1 for t in non_blink if t["attempt_outcome"] == "rejected")
-        return _rate(rejected, len(non_blink))
+        return _rate(rejected, len(non_blink), participants=people, excluded=drops)
 
-    # --- per-participant, reported before any aggregate ---------------------
+    def far_by_type(trials: list[dict], *, people: int, drops: int) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for attack in SPOOF_TYPES:
+            typed = _of_types(trials, (attack,))
+            accepted = sum(1 for t in typed if t["attempt_outcome"] == "accepted")
+            out[attack] = _rate(accepted, len(typed), participants=people, excluded=drops)
+        return out
+
+    # --- per-participant, before any aggregate ------------------------------
     per_participant = []
     for participant in participants:
-        trials = [
-            t for s in ordered_sessions if s["participant_id"] == participant
-            for t in _valid_trials(s)
-        ]
-        per_participant.append(
-            {
-                "participant_id": participant,
-                "sessions": sorted(
-                    s["session_id"] for s in ordered_sessions
-                    if s["participant_id"] == participant
-                ),
-                "valid_trials": len(trials),
-                "frr": frr(trials),
-                "far_all_spoof_types": far(trials, SPOOF_TYPES),
-                "correct_rejection_non_blink": correct_rejection(trials),
-                "spoof_max_blink": _distribution(
-                    [float(t["max_blink_score"]) for t in group(trials, SPOOF_TYPES)]
-                ),
-            }
+        trials = [t for s in ordered if s["participant_id"] == participant for t in _valid(s)]
+        drops = sum(
+            1 for s in ordered if s["participant_id"] == participant
+            for t in s["trials"] if t.get("valid") is not True
         )
+        per_participant.append({
+            "participant_id": participant,
+            "sessions": sorted(s["session_id"] for s in ordered if s["participant_id"] == participant),
+            "valid_trials": len(trials),
+            "excluded_trials": drops,
+            "frr": frr(trials, people=1, drops=drops),
+            "correct_rejection_non_blink": correct_rejection(trials, people=1, drops=drops),
+            "far_by_attack_type": far_by_type(trials, people=1, drops=drops),
+            "still_image_margin": _margin_block(
+                _of_types(trials, STILL_SPOOF_TYPES), high, "S1-S3", POOLING_REFUSAL
+            ),
+        })
 
     per_camera = []
     for camera in cameras:
-        trials = [
-            t for s in ordered_sessions if s["provenance"]["camera_label"] == camera
-            for t in _valid_trials(s)
-        ]
-        per_camera.append(
-            {
-                "camera_label": camera,
-                "valid_trials": len(trials),
-                "frr": frr(trials),
-                "far_all_spoof_types": far(trials, SPOOF_TYPES),
-                "spoof_max_blink": _distribution(
-                    [float(t["max_blink_score"]) for t in group(trials, SPOOF_TYPES)]
-                ),
-            }
+        trials = [t for s in ordered if s["provenance"]["camera_label"] == camera for t in _valid(s)]
+        drops = sum(
+            1 for s in ordered if s["provenance"]["camera_label"] == camera
+            for t in s["trials"] if t.get("valid") is not True
         )
+        people = len({
+            s["participant_id"] for s in ordered if s["provenance"]["camera_label"] == camera
+        })
+        per_camera.append({
+            "camera_label": camera,
+            "valid_trials": len(trials),
+            "excluded_trials": drops,
+            "participants": people,
+            "frr": frr(trials, people=people, drops=drops),
+            "far_by_attack_type": far_by_type(trials, people=people, drops=drops),
+            "still_image_margin": _margin_block(
+                _of_types(trials, STILL_SPOOF_TYPES), high, "S1-S3", POOLING_REFUSAL
+            ),
+        })
 
-    # --- spoof margin: the primary outcome (plan §6.3) ----------------------
-    spoof_trials = group(all_valid, SPOOF_TYPES)
-    spoof_maxima = [float(t["max_blink_score"]) for t in spoof_trials]
-    observed_max = max(spoof_maxima) if spoof_maxima else None
-    near_miss = sum(1 for m in spoof_maxima if m >= high - NEAR_MISS_WINDOW)
-
+    # --- per attack type ----------------------------------------------------
     per_attack_type = []
     for attack in SPOOF_TYPES:
-        typed = group(all_valid, (attack,))
-        if not typed:
-            per_attack_type.append(
-                {
-                    "type": attack, "far": _rate(0, 0),
-                    "max_blink": _distribution([]),
-                    "margin_to_high": None,
-                    "within_0_05_of_high": 0,
-                }
-            )
-            continue
-        maxima = [float(t["max_blink_score"]) for t in typed]
-        per_attack_type.append(
-            {
-                "type": attack,
-                "far": far(all_valid, (attack,)),
-                "max_blink": _distribution(maxima),
-                "margin_to_high": round(high - max(maxima), 6),
-                "within_0_05_of_high": sum(1 for m in maxima if m >= high - NEAR_MISS_WINDOW),
-            }
+        typed = _of_types(all_valid, (attack,))
+        accepted = sum(1 for t in typed if t["attempt_outcome"] == "accepted")
+        family = (
+            "still_image" if attack in STILL_SPOOF_TYPES
+            else "video_replay" if attack in REPLAY_SPOOF_TYPES
+            else "other"
         )
+        per_attack_type.append({
+            "type": attack,
+            "family": family,
+            "far": _rate(accepted, len(typed), participants=n_participants, excluded=n_excluded),
+            "margin": _margin_block(typed, high, attack, f"{attack} only"),
+        })
+
+    still_trials = _of_types(all_valid, STILL_SPOOF_TYPES)
+    replay_trials = _of_types(all_valid, REPLAY_SPOOF_TYPES)
+    other_trials = _of_types(all_valid, OTHER_SPOOF_TYPES)
 
     # --- threshold-crossing evidence, both boundaries inclusive -------------
-    reached_high = [t for t in all_valid if float(t["max_blink_score"]) >= high]
-    reached_low = [t for t in all_valid if float(t["min_blink_score"]) <= low]
+    scored = [t for t in all_valid if t.get("max_blink_score") is not None]
+    reached_high = [t for t in scored if float(t["max_blink_score"]) >= high - BOUNDARY_TOLERANCE]
+    reached_low = [t for t in scored if float(t["min_blink_score"]) <= low + BOUNDARY_TOLERANCE]
     crossing = {
         "high_threshold": high,
         "low_threshold": low,
         "comparison": "max(scores) >= high AND min(scores) <= low; both inclusive",
+        "boundary_tolerance": BOUNDARY_TOLERANCE,
         "trials_reaching_high": len(reached_high),
         "trials_reaching_low": len(reached_low),
-        "trials_exactly_at_high": sum(
-            1 for t in all_valid if float(t["max_blink_score"]) == high
+        "trials_at_high_boundary": sum(
+            1 for t in scored if abs(float(t["max_blink_score"]) - high) <= BOUNDARY_TOLERANCE
         ),
-        "trials_exactly_at_low": sum(
-            1 for t in all_valid if float(t["min_blink_score"]) == low
+        "trials_at_low_boundary": sum(
+            1 for t in scored if abs(float(t["min_blink_score"]) - low) <= BOUNDARY_TOLERANCE
         ),
         "both_boundaries_exercised": bool(reached_high) and bool(reached_low),
     }
 
-    # --- condition coverage --------------------------------------------------
     coverage: dict[str, dict[str, int]] = {}
     for factor in ("lighting", "head_pose", "distance_cm", "eyewear"):
         counts: dict[str, int] = {}
@@ -272,35 +305,25 @@ def analyse(sessions: list[dict]) -> dict[str, Any]:
             key = str(trial["condition"][factor])
             counts[key] = counts.get(key, 0) + 1
         coverage[factor] = dict(sorted(counts.items()))
-    coverage["camera_label"] = dict(
-        sorted(
-            (
-                camera,
-                sum(
-                    len(_valid_trials(s)) for s in ordered_sessions
-                    if s["provenance"]["camera_label"] == camera
-                ),
-            )
-            for camera in cameras
-        )
-    )
+    coverage["camera_label"] = dict(sorted(
+        (camera, sum(len(_valid(s)) for s in ordered if s["provenance"]["camera_label"] == camera))
+        for camera in cameras
+    ))
 
     provenance = sorted(
-        (
-            {
-                "session_id": s["session_id"],
-                "faceauth_commit": s["provenance"]["faceauth_commit"],
-                "python_version": s["provenance"]["python_version"],
-                "face_landmarker_sha256": s["provenance"]["face_landmarker_sha256"],
-                "camera_label": s["provenance"]["camera_label"],
-                "camera_resolution": s["provenance"]["camera_resolution"],
-                "os_build": s["provenance"]["os_build"],
-                "pinned_dependencies": dict(sorted(s["provenance"]["pinned_dependencies"].items())),
-                "liveness_config": dict(sorted(s["provenance"]["liveness_config"].items())),
-                "randomisation_seed": s["randomisation_seed"],
-            }
-            for s in ordered_sessions
-        ),
+        ({
+            "session_id": s["session_id"],
+            "faceauth_commit": s["provenance"]["faceauth_commit"],
+            "python_version": s["provenance"]["python_version"],
+            "face_landmarker_sha256": s["provenance"]["face_landmarker_sha256"],
+            "camera_label": s["provenance"]["camera_label"],
+            "camera_resolution": s["provenance"]["camera_resolution"],
+            "os_build": s["provenance"]["os_build"],
+            "pinned_dependencies": dict(sorted(s["provenance"]["pinned_dependencies"].items())),
+            "liveness_config": dict(sorted(s["provenance"]["liveness_config"].items())),
+            "randomisation_seed": s["randomisation_seed"],
+            "data_classification": s["data_classification"],
+        } for s in ordered),
         key=lambda entry: entry["session_id"],
     )
 
@@ -309,58 +332,90 @@ def analyse(sessions: list[dict]) -> dict[str, Any]:
         "b18_status": "OPEN",
         "clears_b18": False,
         "authorizes_capture": False,
+        "data_classification": "synthetic_stage0",
         "statistical_basis": CLUSTERING_WARNING,
-        "notes": threshold_notes,
+        "pooling_policy": POOLING_REFUSAL,
         "counts": {
-            "participants": len(participants),
+            "participants": n_participants,
             "participant_ids": participants,
             "sessions": len(session_ids),
             "session_ids": session_ids,
             "cameras": len(cameras),
             "trials_attempted": attempted,
             "trials_valid": len(all_valid),
-            "trials_excluded": len(excluded_trials),
+            "trials_excluded": n_excluded,
         },
         "exclusions_by_reason": dict(sorted(exclusions.items())),
         "per_participant": per_participant,
         "per_camera": per_camera,
         "aggregate": {
-            "frr_genuine_blink": frr(all_valid),
-            "correct_rejection_genuine_non_blink": correct_rejection(all_valid),
-            "far_all_spoof_types_pooled": far(all_valid, SPOOF_TYPES),
-            "pooling_caveat": (
-                "Pooling attack types hides the ones expected to succeed - notably "
-                "S4 video replay. Read the per-attack-type table, not this number."
+            "frr_genuine_blink": frr(all_valid, people=n_participants, drops=n_excluded),
+            "correct_rejection_genuine_non_blink": correct_rejection(
+                all_valid, people=n_participants, drops=n_excluded
             ),
+            "far_by_attack_type": far_by_type(
+                all_valid, people=n_participants, drops=n_excluded
+            ),
+            "far_pooled_across_attack_types": None,
+            "why_no_pooled_far": POOLING_REFUSAL,
         },
         "per_attack_type": per_attack_type,
-        "distributions": {
-            "genuine_blink_max": _distribution(
-                [float(t["max_blink_score"]) for t in group(all_valid, GENUINE_BLINK_TYPES)]
+        "still_image_margin": _margin_block(
+            still_trials, high, "S1-S3 (printed photo, still display)",
+            "The primary spoof outcome. Rejection of a still image hinges on "
+            "max(blink_score) failing to reach the high threshold; the margin is "
+            "the finding, not the rate.",
+        ),
+        "video_replay": {
+            "scope": "S4",
+            "trials": len(replay_trials),
+            "far": _rate(
+                sum(1 for t in replay_trials if t["attempt_outcome"] == "accepted"),
+                len(replay_trials), participants=n_participants, excluded=n_excluded,
             ),
-            "genuine_blink_min": _distribution(
-                [float(t["min_blink_score"]) for t in group(all_valid, GENUINE_BLINK_TYPES)]
+            "max_blink_distribution": _distribution(_maxima(replay_trials)),
+            "note": (
+                "Video replay is a KNOWN UNMITIGATED GAP (docs/THREAT_MODEL.md §4). "
+                "It is expected to be accepted, is reported separately, and is never "
+                "folded into the still-image margin or any pooled rate."
             ),
-            "genuine_non_blink_max": _distribution(
-                [float(t["max_blink_score"]) for t in group(all_valid, GENUINE_NON_BLINK_TYPES)]
-            ),
-            "spoof_max": _distribution(spoof_maxima),
         },
-        "spoof_margin": {
-            "high_threshold": high,
-            "observed_max_over_all_spoofs": None if observed_max is None else round(observed_max, 6),
-            "margin_to_high": None if observed_max is None else round(high - observed_max, 6),
-            "within_0_05_of_high": near_miss,
-            "why_this_matters": (
-                "Spoof rejection hinges on max(blink_score) failing to reach the high "
-                "threshold. A far of zero with a thin margin is not evidence of spoof "
-                "resistance; the margin is the finding, not the rate."
+        "other_spoof": {
+            "scope": "S5",
+            "trials": len(other_trials),
+            "max_blink_distribution": _distribution(_maxima(other_trials)),
+            "note": "Reported separately; not part of the S1-S3 still-image margin.",
+        },
+        "distributions": {
+            "genuine_blink_max": _distribution(_maxima(_of_types(all_valid, GENUINE_BLINK_TYPES))),
+            "genuine_blink_min": _distribution([
+                float(t["min_blink_score"]) for t in _of_types(all_valid, GENUINE_BLINK_TYPES)
+                if t.get("min_blink_score") is not None
+            ]),
+            "genuine_non_blink_max": _distribution(
+                _maxima(_of_types(all_valid, GENUINE_NON_BLINK_TYPES))
             ),
         },
         "threshold_crossing": crossing,
         "condition_coverage": coverage,
         "provenance": provenance,
     }
+
+
+# ----------------------------------------------------------------- rendering
+
+
+def md_escape(value: Any) -> str:
+    """Escape a value for a Markdown table cell.
+
+    Validation already rejects control characters, newlines and pipes in
+    report-visible fields; this is the second layer, so a future schema
+    relaxation cannot silently turn a manifest value into table syntax.
+    """
+    text = str(value)
+    text = text.replace("\\", "\\\\").replace("|", "\\|")
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return "".join(ch if ch.isprintable() or ch == " " else " " for ch in text)
 
 
 def _fmt_rate(entry: dict[str, Any]) -> str:
@@ -371,7 +426,8 @@ def _fmt_rate(entry: dict[str, Any]) -> str:
         low, high = entry["wilson_95"]
         text += f" (Wilson 95% [{low:.4f}, {high:.4f}])"
     if entry["zero_event_upper_bound_95"] is not None:
-        text += f"; zero observed, one-sided 95% upper bound {entry['zero_event_upper_bound_95']:.4f}"
+        text += f"; zero observed, 95% upper bound {entry['zero_event_upper_bound_95']:.4f}"
+    text += f" [n_participants={entry['participants']}, excluded={entry['excluded_trials_in_scope']}]"
     return text
 
 
@@ -382,6 +438,27 @@ def _fmt_distribution(dist: dict[str, Any]) -> str:
         f"n={dist['n']}  min={dist['min']:.4f}  "
         f"median={dist['median']:.4f}  max={dist['max']:.4f}"
     )
+
+
+def _fmt_margin(block: dict[str, Any]) -> list[str]:
+    lines = [
+        f"- Scope: **{md_escape(block['scope'])}** ({block['trials']} valid trials)",
+        f"- High threshold: **{block['high_threshold']}**",
+    ]
+    observed = block["observed_max"]
+    lines.append(f"- Observed max: **{'n/a' if observed is None else f'{observed:.4f}'}**")
+    gap = block["margin_to_high"]
+    lines.append(f"- Margin to high: **{'n/a' if gap is None else f'{gap:.4f}'}**")
+    lines.append(
+        f"- Near misses (rejected, within 0.05 **below** high): "
+        f"**{block['near_misses_within_0_05_below_high']}**"
+    )
+    lines.append(
+        f"- Threshold crossings (max at or above high): "
+        f"**{block['threshold_crossings_at_or_above_high']}**"
+    )
+    lines.append(f"- Distribution: {_fmt_distribution(block['max_blink_distribution'])}")
+    return lines
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -397,15 +474,14 @@ def render_markdown(result: dict[str, Any]) -> str:
     add(f"- B18 status: **{result['b18_status']}**")
     add(f"- Clears B18: **{result['clears_b18']}**")
     add(f"- Authorizes capture: **{result['authorizes_capture']}**")
+    add(f"- Data classification: **{md_escape(result['data_classification'])}**")
     add("")
     add("## Statistical basis - read before any number below")
     add("")
     add(result["statistical_basis"])
     add("")
-    for note in result["notes"]:
-        add(f"> **Note:** {note}")
-    if result["notes"]:
-        add("")
+    add(f"> **On pooling:** {result['pooling_policy']}")
+    add("")
 
     add("## Counts")
     add("")
@@ -428,34 +504,41 @@ def render_markdown(result: dict[str, Any]) -> str:
         add("| Reason | Count |")
         add("|---|---|")
         for reason, count in result["exclusions_by_reason"].items():
-            add(f"| {reason} | {count} |")
+            add(f"| {md_escape(reason)} | {count} |")
     else:
         add("None.")
     add("")
 
     add("## Per-participant results (primary)")
     add("")
-    add("| Participant | Sessions | Valid trials | FRR | FAR (all spoof types) | Correct rejection (N*) | Spoof max(blink) |")
-    add("|---|---|---|---|---|---|---|")
+    add("| Participant | Sessions | Valid | Excluded | FRR | Correct rejection (N*) |")
+    add("|---|---|---|---|---|---|")
     for entry in result["per_participant"]:
         add(
-            f"| {entry['participant_id']} | {', '.join(entry['sessions'])} | "
-            f"{entry['valid_trials']} | {_fmt_rate(entry['frr'])} | "
-            f"{_fmt_rate(entry['far_all_spoof_types'])} | "
-            f"{_fmt_rate(entry['correct_rejection_non_blink'])} | "
-            f"{_fmt_distribution(entry['spoof_max_blink'])} |"
+            f"| {md_escape(entry['participant_id'])} | "
+            f"{md_escape(', '.join(entry['sessions']))} | {entry['valid_trials']} | "
+            f"{entry['excluded_trials']} | {_fmt_rate(entry['frr'])} | "
+            f"{_fmt_rate(entry['correct_rejection_non_blink'])} |"
         )
+    add("")
+    add("### FAR per attack type, per participant")
+    add("")
+    add("| Participant | " + " | ".join(SPOOF_TYPES) + " |")
+    add("|---" * (len(SPOOF_TYPES) + 1) + "|")
+    for entry in result["per_participant"]:
+        cells = " | ".join(_fmt_rate(entry["far_by_attack_type"][a]) for a in SPOOF_TYPES)
+        add(f"| {md_escape(entry['participant_id'])} | {cells} |")
     add("")
 
     add("## Per-camera results")
     add("")
-    add("| Camera | Valid trials | FRR | FAR (all spoof types) | Spoof max(blink) |")
+    add("| Camera | Participants | Valid | Excluded | FRR |")
     add("|---|---|---|---|---|")
     for entry in result["per_camera"]:
         add(
-            f"| {entry['camera_label']} | {entry['valid_trials']} | "
-            f"{_fmt_rate(entry['frr'])} | {_fmt_rate(entry['far_all_spoof_types'])} | "
-            f"{_fmt_distribution(entry['spoof_max_blink'])} |"
+            f"| {md_escape(entry['camera_label'])} | {entry['participants']} | "
+            f"{entry['valid_trials']} | {entry['excluded_trials']} | "
+            f"{_fmt_rate(entry['frr'])} |"
         )
     add("")
 
@@ -467,64 +550,70 @@ def render_markdown(result: dict[str, Any]) -> str:
         "- Correct rejection, genuine non-blink: "
         f"{_fmt_rate(aggregate['correct_rejection_genuine_non_blink'])}"
     )
-    add(f"- FAR, all spoof types pooled: {_fmt_rate(aggregate['far_all_spoof_types_pooled'])}")
     add("")
-    add(f"> {aggregate['pooling_caveat']}")
+    add("### FAR per attack type")
     add("")
-
-    add("## Per attack type")
-    add("")
-    add("| Type | FAR | max(blink) | Margin to high | Within 0.05 of high |")
-    add("|---|---|---|---|---|")
+    add("| Type | Family | FAR |")
+    add("|---|---|---|")
     for entry in result["per_attack_type"]:
-        margin = "n/a" if entry["margin_to_high"] is None else f"{entry['margin_to_high']:.4f}"
         add(
-            f"| {entry['type']} | {_fmt_rate(entry['far'])} | "
-            f"{_fmt_distribution(entry['max_blink'])} | {margin} | "
-            f"{entry['within_0_05_of_high']} |"
+            f"| {md_escape(entry['type'])} | {md_escape(entry['family'])} | "
+            f"{_fmt_rate(entry['far'])} |"
         )
     add("")
+    add(f"> **No pooled FAR is reported.** {aggregate['why_no_pooled_far']}")
+    add("")
 
-    add("## Spoof margin - the primary outcome")
+    add("## Still-image spoof margin (S1-S3) - the primary outcome")
     add("")
-    margin_block = result["spoof_margin"]
-    add(f"- High threshold: **{margin_block['high_threshold']}**")
-    observed = margin_block["observed_max_over_all_spoofs"]
-    add(f"- Observed max over all spoof trials: **{'n/a' if observed is None else f'{observed:.4f}'}**")
-    gap = margin_block["margin_to_high"]
-    add(f"- Margin to the high threshold: **{'n/a' if gap is None else f'{gap:.4f}'}**")
-    add(f"- Spoof trials within 0.05 of the high threshold: **{margin_block['within_0_05_of_high']}**")
+    for line in _fmt_margin(result["still_image_margin"]):
+        add(line)
     add("")
-    add(f"> {margin_block['why_this_matters']}")
+    add(f"> {result['still_image_margin']['note']}")
+    add("")
+
+    add("## Video replay (S4) - reported separately")
+    add("")
+    replay = result["video_replay"]
+    add(f"- Trials: {replay['trials']}")
+    add(f"- FAR: {_fmt_rate(replay['far'])}")
+    add(f"- max(blink): {_fmt_distribution(replay['max_blink_distribution'])}")
+    add("")
+    add(f"> {replay['note']}")
     add("")
 
     add("## Threshold crossing")
     add("")
     crossing = result["threshold_crossing"]
     add(f"- Decision: `{crossing['comparison']}`")
-    add(f"- Trials reaching the high threshold ({crossing['high_threshold']}): {crossing['trials_reaching_high']}")
-    add(f"- Trials reaching the low threshold ({crossing['low_threshold']}): {crossing['trials_reaching_low']}")
-    add(f"- Trials exactly at the high boundary: {crossing['trials_exactly_at_high']}")
-    add(f"- Trials exactly at the low boundary: {crossing['trials_exactly_at_low']}")
+    add(f"- Comparison tolerance: {crossing['boundary_tolerance']}")
+    add(f"- Trials reaching high ({crossing['high_threshold']}): {crossing['trials_reaching_high']}")
+    add(f"- Trials reaching low ({crossing['low_threshold']}): {crossing['trials_reaching_low']}")
+    add(f"- Trials at the high boundary: {crossing['trials_at_high_boundary']}")
+    add(f"- Trials at the low boundary: {crossing['trials_at_low_boundary']}")
     add(f"- Both boundaries exercised: **{crossing['both_boundaries_exercised']}**")
     add("")
 
     add("## Condition coverage")
     add("")
     for factor, counts_by_level in result["condition_coverage"].items():
-        levels = ", ".join(f"{level} ({count})" for level, count in counts_by_level.items())
-        add(f"- **{factor}**: {levels if levels else 'none'}")
+        levels = ", ".join(
+            f"{md_escape(level)} ({count})" for level, count in counts_by_level.items()
+        )
+        add(f"- **{md_escape(factor)}**: {levels if levels else 'none'}")
     add("")
 
     add("## Provenance")
     add("")
-    add("| Session | Commit | Python | Model SHA-256 | Camera | Seed |")
-    add("|---|---|---|---|---|---|")
+    add("| Session | Commit | Python | Model SHA-256 | Camera | Seed | Classification |")
+    add("|---|---|---|---|---|---|---|")
     for entry in result["provenance"]:
         add(
-            f"| {entry['session_id']} | `{entry['faceauth_commit'][:12]}` | "
-            f"{entry['python_version']} | `{entry['face_landmarker_sha256'][:12]}` | "
-            f"{entry['camera_label']} | {entry['randomisation_seed']} |"
+            f"| {md_escape(entry['session_id'])} | `{md_escape(entry['faceauth_commit'][:12])}` | "
+            f"{md_escape(entry['python_version'])} | "
+            f"`{md_escape(entry['face_landmarker_sha256'][:12])}` | "
+            f"{md_escape(entry['camera_label'])} | {entry['randomisation_seed']} | "
+            f"{md_escape(entry['data_classification'])} |"
         )
     add("")
     add("---")

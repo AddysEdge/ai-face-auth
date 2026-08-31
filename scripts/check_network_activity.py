@@ -290,6 +290,24 @@ if stage == "full":
     cv2.line(frame, (240, 220), (240, 275), (170, 140, 120), 3)
     cv2.ellipse(frame, (240, 310), (40, 18), 0, 0, 180, (140, 90, 90), -1)
 
+    # Report each inference stage separately. The point of the check is that
+    # the runtime opens no socket *while doing real work*, so a probe that
+    # silently stopped short of the later models would still look clean. The
+    # presence gate in particular is a place the pipeline can now legitimately
+    # return early, and it must not do so here.
+    landmarker = provider._landmarker
+    stages = {
+        "detector": bool(landmarker._detect(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))),
+    }
+    probe_result = landmarker.detect(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    stages["presence_gate"] = probe_result is not None
+    stages["landmarks"] = probe_result is not None and probe_result["landmarks"].shape == (478, 2)
+    stages["blendshapes"] = probe_result is not None and len(probe_result["blendshapes"]) == 52
+    for stage_name, ok in stages.items():
+        print("STAGE %s %s" % (stage_name, "OK" if ok else "MISSED"), flush=True)
+    if not all(stages.values()):
+        raise SystemExit("probe did not exercise every inference stage: %r" % stages)
+
     face = FaceBox(x=130.0, y=90.0, width=220.0, height=300.0, confidence=0.9,
                    landmarks=((200, 205), (280, 205), (240, 250), (215, 300), (265, 300)))
     provider.observe(Frame(image=frame, timestamp=0.0), face)

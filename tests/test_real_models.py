@@ -95,9 +95,9 @@ def test_sface_embedder_matches_opencv_reference_implementation():
 
 @requires_models
 def test_liveness_provider_loads_and_handles_no_face_gracefully():
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
 
-    provider = MediaPipeChallengeResponseLiveness(model_asset_path=LANDMARKER_PATH)
+    provider = LiteRtChallengeResponseLiveness(model_asset_path=LANDMARKER_PATH)
     provider.new_challenge()
     frame = Frame(image=np.zeros((480, 640, 3), dtype=np.uint8), timestamp=0.0)
     provider.observe(frame, _face())  # no real face in a blank image; must not crash
@@ -113,10 +113,10 @@ def test_default_enabled_challenges_is_blink_only():
     head-turn detection is hardened against stationary-photo jitter."""
     import random
 
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
     from faceauth.pipeline_types import ChallengeKind
 
-    provider = MediaPipeChallengeResponseLiveness(
+    provider = LiteRtChallengeResponseLiveness(
         model_asset_path=LANDMARKER_PATH, rng=random.Random(0)
     )
     issued = {provider.new_challenge() for _ in range(20)}
@@ -127,10 +127,10 @@ def test_default_enabled_challenges_is_blink_only():
 def test_enabled_challenges_can_be_explicitly_widened():
     """Head-turn remains fully implemented and selectable - just not the
     default - for future hardening/opt-in use."""
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
     from faceauth.pipeline_types import ChallengeKind
 
-    provider = MediaPipeChallengeResponseLiveness(
+    provider = LiteRtChallengeResponseLiveness(
         model_asset_path=LANDMARKER_PATH,
         enabled_challenges=(ChallengeKind.TURN_HEAD_LEFT,),
     )
@@ -138,9 +138,83 @@ def test_enabled_challenges_can_be_explicitly_widened():
 
 
 def test_empty_enabled_challenges_rejected(tmp_path: Path):
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
 
     with pytest.raises(ValueError, match="must not be empty"):
-        MediaPipeChallengeResponseLiveness(
+        LiteRtChallengeResponseLiveness(
             model_asset_path=tmp_path / "irrelevant.task", enabled_challenges=()
         )
+
+
+# --------------------------------------------------------- face-presence gate
+#
+# These exercise the gate against the real landmark model. The matching
+# oracle comparison - proving MediaPipe rejects the same input - lives in
+# scripts/b17_option_a/compare.py as the `presence_gate_reject` corpus case,
+# because it needs `mediapipe` installed and that is deliberately absent from
+# the shipping environment (B17).
+
+
+def _gate_corpus_case(name: str):
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from scripts.b17_option_a.corpus import build_corpus
+
+    for case_name, image in build_corpus():
+        if case_name == name:
+            return image
+    raise AssertionError(f"corpus case {name!r} not found")
+
+
+@requires_models
+def test_the_presence_gate_rejects_a_crop_the_detector_accepted():
+    """The defect this gate closes: detector-positive, landmark-negative.
+
+    On this input the face detector fires but the landmark model's presence
+    logit is strongly negative, so MediaPipe returns no face. Without the gate
+    the replica accepts it and fabricates landmarks and blendshapes for a blank
+    oval.
+    """
+    import cv2
+
+    from faceauth.liveness.litert_landmarker import LiteRtFaceLandmarker
+
+    landmarker = LiteRtFaceLandmarker(LANDMARKER_PATH)
+    rgb = cv2.cvtColor(_gate_corpus_case("presence_gate_reject"), cv2.COLOR_BGR2RGB)
+
+    assert landmarker._detect(rgb), "this case is only meaningful if the detector fires"
+    assert landmarker.detect(rgb) is None, "the presence gate must reject this crop"
+
+
+@requires_models
+def test_the_presence_gate_admits_an_ordinary_face_with_a_high_score():
+    """The rejection test above would pass trivially if the gate rejected all."""
+    import cv2
+
+    from faceauth.liveness.litert_landmarker import LiteRtFaceLandmarker
+
+    landmarker = LiteRtFaceLandmarker(LANDMARKER_PATH)
+    rgb = cv2.cvtColor(_gate_corpus_case("open1.00"), cv2.COLOR_BGR2RGB)
+
+    result = landmarker.detect(rgb)
+    assert result is not None
+    assert result["presence_score"] > 0.5
+    assert result["landmarks"].shape == (478, 2)
+
+
+@requires_models
+def test_the_real_model_output_layout_is_the_one_this_code_resolves():
+    """Pins the layout the gate depends on, against the actual bundle."""
+    from faceauth.liveness.litert_landmarker import LiteRtFaceLandmarker
+
+    landmarker = LiteRtFaceLandmarker(LANDMARKER_PATH)
+    details = landmarker._landmarks.get_output_details()
+
+    assert len(details) == 3, "the shipped landmark model exposes three outputs"
+    assert landmarker._landmark_output["name"] == "Identity"
+    assert landmarker._presence_output["name"] == "Identity_1"
+    assert int(np.prod(landmarker._landmark_output["shape"])) == 478 * 3
+    assert int(np.prod(landmarker._presence_output["shape"])) == 1

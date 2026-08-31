@@ -270,10 +270,10 @@ if stage == "full":
     # Exercise the real liveness provider - the code path the product runs -
     # not a hand-rolled approximation of it. If this ever stops matching what
     # authentication actually calls, the check stops meaning anything.
-    from faceauth.liveness.challenge_response import MediaPipeChallengeResponseLiveness
+    from faceauth.liveness.challenge_response import LiteRtChallengeResponseLiveness
     from faceauth.pipeline_types import FaceBox, Frame
 
-    provider = MediaPipeChallengeResponseLiveness(model_asset_path=landmarker_path)
+    provider = LiteRtChallengeResponseLiveness(model_asset_path=landmarker_path)
     provider.new_challenge()
 
     # A procedurally drawn face, not a blank frame: on a blank frame the

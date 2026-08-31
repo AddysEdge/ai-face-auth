@@ -1701,7 +1701,7 @@ def test_child_source_exercises_the_real_liveness_provider() -> None:
     If this drifts from what authentication actually calls, the check stops
     being evidence about the product.
     """
-    assert "MediaPipeChallengeResponseLiveness" in check._CHILD_SOURCE
+    assert "LiteRtChallengeResponseLiveness" in check._CHILD_SOURCE
     assert "provider.finalize()" in check._CHILD_SOURCE
 
 

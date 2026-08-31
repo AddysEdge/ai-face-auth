@@ -130,7 +130,7 @@ def decide_head_turn(turns: list[float], challenge: ChallengeKind, min_swing: fl
 DEFAULT_ENABLED_CHALLENGES: tuple[ChallengeKind, ...] = (ChallengeKind.BLINK,)
 
 
-class MediaPipeChallengeResponseLiveness(LivenessProvider):
+class LiteRtChallengeResponseLiveness(LivenessProvider):
     def __init__(
         self,
         model_asset_path: Path,
@@ -197,3 +197,11 @@ class MediaPipeChallengeResponseLiveness(LivenessProvider):
 
         turns = [o["turn"] for o in self._observations]
         return decide_head_turn(turns, challenge, self._head_turn_min_swing)
+
+
+#: Temporary compatibility alias for the pre-Phase-2.5 name. The runtime is
+#: LiteRT, not MediaPipe, so the old name actively misdescribes what runs;
+#: nothing in this repository uses it, and it exists only so an out-of-tree
+#: import does not break silently on upgrade. Slated for removal once Phase 3
+#: entry is decided - do not use it in new code.
+MediaPipeChallengeResponseLiveness = LiteRtChallengeResponseLiveness

@@ -217,6 +217,10 @@ class ProbeOutcome:
 
     all_connections: set[Connection] = field(default_factory=set)
     canary_seen: bool = False
+    # Inference stages the child reported completing. Recorded so a run that
+    # short-circuited before the later models is visible in the evidence
+    # rather than indistinguishable from one that did the whole pipeline.
+    stages_completed: list[str] = field(default_factory=list)
     canary_port: int | None = None
     successful_polls: int = 0
     failed_polls: list[tuple[ObserverFailure, str]] = field(default_factory=list)
@@ -688,6 +692,8 @@ def watch_child(
                 elif line == "READY":
                     outcome.reached_ready = True
                     drain_until = time.monotonic() + drain_seconds
+                elif line.startswith("STAGE ") and line.endswith(" OK"):
+                    outcome.stages_completed.append(line.split()[1])
             while True:
                 try:
                     err = err_q.get_nowait()
@@ -761,6 +767,8 @@ def watch_child(
                             outcome.child_pid = int(item.split()[1])
                     elif item == "READY":
                         outcome.reached_ready = True
+                    elif item.startswith("STAGE ") and item.endswith(" OK"):
+                        outcome.stages_completed.append(item.split()[1])
                 elif len(outcome.stderr_tail) < 400:
                     outcome.stderr_tail.append(item)
     finally:
@@ -1107,6 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
         f"  (port {outcome.canary_port})"
     )
     print(f"  child reached READY      : {'YES' if outcome.reached_ready else 'NO'}")
+    if outcome.stages_completed:
+        print(f"  inference stages run     : {', '.join(outcome.stages_completed)}")
     # Two different clocks, reported separately. The probe can finish cleanly
     # and the command budget still run out afterwards.
     print(f"  probe observation cut short : {'YES' if outcome.timed_out else 'no'}")
@@ -1172,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
                         "failed_polls": [k.name for k, _ in outcome.failed_polls],
                         "canary_seen": outcome.canary_seen,
                         "reached_ready": outcome.reached_ready,
+                        "stages_completed": outcome.stages_completed,
                         # Probe-specific: the watch loop was cut short.
                         "probe_timed_out": outcome.timed_out,
                     },

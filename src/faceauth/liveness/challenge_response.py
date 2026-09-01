@@ -14,10 +14,11 @@ This is the primary, default liveness signal (see docs/RESEARCH.md section 3
 for why: it is deterministic, testable, and does not depend on a stale
 pretrained spoof-classifier checkpoint). It issues a randomized challenge
 (blink, or turn head left/right) and requires a *transient* signal within
-the observation window: for blink, the tracked value must rise above a high
-threshold and also dip at/below a low threshold (proving both "closed" and
-"open" were observed); for head-turn, the signed ratio must *swing* by at
-least a minimum amount in the requested direction (see the swing-based
+the observation window: for blink, the tracked value must reach at or above a
+high threshold and also reach at or below a low threshold - both comparisons
+are inclusive (proving both "closed" and "open" were observed); for head-turn,
+the signed ratio must *swing* by at least a minimum amount in the requested
+direction (see the swing-based
 design note in ``finalize()`` - an absolute-zero-baseline requirement turned
 out to be unusable in practice, see docs/RESEARCH.md). That transience
 requirement is what defeats a static printed photo or a frozen phone/display

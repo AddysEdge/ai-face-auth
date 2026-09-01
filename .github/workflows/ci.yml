@@ -201,6 +201,20 @@ jobs:
           fi
           echo "Repository hygiene check passed."
 
+      # Filenames are a weak guard: `git add -f notes.txt` defeats any .gitignore
+      # pattern. This checks tracked CONTENT for the combination that identifies
+      # a B18 manifest or analysis artifact - participant id, session id, and a
+      # blink-score series together. The allowlist is the schema that defines
+      # those names and the source/tests that legitimately mention them; a data
+      # file has no reason to appear anywhere else.
+      #
+      # No exception is added for a future aggregate report: publishing one
+      # requires owner decision D16, which is undecided.
+      - name: Reject tracked B18 participant data, evidence, and artifacts
+        run: |
+          python scripts/check_b18_data_leak.py --self-test
+          python scripts/check_b18_data_leak.py
+
       - name: Reject Credential Provider registration or credential serialization in code
         shell: bash
         run: |

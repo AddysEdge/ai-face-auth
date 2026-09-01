@@ -37,3 +37,44 @@ room for a documentation folder.
 
 If you are reading this because you are about to start capturing: stop, and
 check plan section 16 first.
+
+## Stage 0 tooling
+
+`scripts/b18_stage0/` implements the Stage 0 dry run: strict whitelist
+validation against `forms/TRIAL_MANIFEST_SCHEMA.md`, cross-session
+comparability checks, deterministic aggregate analysis, and a rehearsal of the
+workspace-deletion step. See the plan's Stage 0 section for commands and exit
+codes.
+
+Two properties are worth stating plainly, because earlier revisions got them
+wrong:
+
+- **Every accept/reject decision goes through the shipping function.**
+  `scripts/b18_stage0/decision.py` calls
+  `faceauth.liveness.challenge_response.decide_blink` directly, so validation,
+  analysis and the report cannot drift from the system being rehearsed. The
+  comparison is exact - no tolerance widens the threshold. A tolerance appears
+  only as a *label* ("this sat on the boundary") and decides nothing.
+- **Nothing here deletes a path you name.** The cleanup rehearsal takes no
+  argument at all: it creates its own throwaway directory under the system
+  temporary directory, deletes that, and reports what it did. An earlier design
+  gated deletion on a marker file stored inside the candidate directory and
+  called it a capability; it was not one - a forged directory and marker
+  verified identically, which was demonstrated rather than argued. The marker
+  survives only as a sanity check on an output destination. **No secure-erasure
+  claim is made**: filesystem deletion removes directory entries, and on SSDs
+  the underlying data may persist.
+
+`analyse` writes into a fresh workspace it creates itself; there is no `--out`,
+`--report`, or `--workspace`. Nothing is written until parsing, schema
+validation and corpus validation have all passed, so an invalid run leaves no
+directory behind.
+
+It accepts **only** manifests declaring
+`"data_classification": "synthetic_stage0"`. Feeding it real Stage 1 or Stage 2
+data is not a configuration change - it requires a separate, owner-authorized,
+reviewed change.
+
+It has run only against the invented manifests in
+`scripts/b18_stage0/synthetic.py`. **No real input exists, and the tooling
+cannot clear B18** - only the recorded security review can.

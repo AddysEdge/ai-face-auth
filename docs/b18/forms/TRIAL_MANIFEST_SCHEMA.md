@@ -7,15 +7,25 @@
 One JSON object per session. Field names are normative — the analysis script
 depends on them.
 
+**The schema is a whitelist.** Every object has an exact allowed key set, and an
+unknown field is a hard validation failure. A blacklist of forbidden names is a
+guess about what a leak will be called; a whitelist cannot be out-guessed.
+
+**`data_classification` is mandatory.** The Stage 0 tooling processes
+`"synthetic_stage0"` and nothing else, so it cannot consume a real participant
+manifest and emit a report describing the data as synthetic. Handling Stage 1 or
+Stage 2 manifests requires a separate, owner-authorized, reviewed change.
+
 ## Session object
 
 ```jsonc
 {
   "session_id": "S01",
   "participant_id": "P01",           // pseudonym only; never a name
-  "date": "YYYY-MM-DD",
+  "date": "YYYY-MM-DD",              // a real calendar date
   "operator_role": "repository owner",
-  "randomisation_seed": 123456,
+  "randomisation_seed": 123456,      // 0 .. 4294967295, so the run replays
+  "data_classification": "synthetic_stage0",   // REQUIRED; Stage 0 accepts only this
 
   "provenance": {                    // plan §11.4 - safe to publish
     "faceauth_commit": "<40-hex>",
@@ -32,7 +42,10 @@ depends on them.
     },
     "camera_label": "<model / interface>",   // NOT a serial number
     "camera_resolution": "1280x720",
-    "os_build": "<...>"
+    "os_build": "<...>",
+    "liveness_implementation": "litert_landmarker",  // the runtime under test
+    "schema_version": "1.0",           // this document's version
+    "tool_version": "1.0"              // the Stage 0 tool that reads it
   },
 
   "trials": [ /* trial objects */ ]
@@ -53,7 +66,7 @@ depends on them.
   },
 
   "blink_scores": [0.24, 0.21, 0.63], // full per-frame series - REQUIRED (plan §8, §10.2)
-  "turn_ratios": null,                // only when head-turn is under evaluation
+  "turn_ratios": null,                // MUST be null/absent when enabled_challenges is ["BLINK"]
 
   "max_blink_score": 0.63,            // derived; primary spoof outcome (plan §6.3)
   "min_blink_score": 0.21,
@@ -67,7 +80,7 @@ depends on them.
 
   "ground_truth": "blink",            // blink|no_blink|spoof - assigned independently (§7.4)
   "self_report": "blinked",           // blinked|did_not_blink|unsure|n/a
-  "label_source": "schedule+self_report",
+  "label_source": "schedule+self_report",  // genuine trials; spoofs use "schedule_only"
 
   "valid": true,
   "exclusion_reason": null,           // no_face_detected|missed_prompt|operator_error|
@@ -76,6 +89,15 @@ depends on them.
   "notes": ""                         // never identifying
 }
 ```
+
+## Empty observation series
+
+A trial the detector never saw a face in has nothing to record. Fabricating a
+score series to satisfy a validator would be inventing measurements, so
+`blink_scores` **may be empty** — with `max_blink_score` and `min_blink_score`
+both `null` — for an excluded trial whose reason is `no_face_detected` or
+`software_error`. `no_face_detected` additionally requires `frames_with_face: 0`.
+Every other trial must carry its series.
 
 ## Invariants the analysis must enforce
 
@@ -87,8 +109,40 @@ depends on them.
 - `attempt_outcome` is the post-continuity result, not `decide_blink` alone.
 - `ground_truth` was never derived from any model output.
 - A trial whose `intended_type` disagrees with `self_report` is
-  `ambiguous_ground_truth` and excluded.
-- No field anywhere contains a name, contact detail, serial number, or image.
+  `ambiguous_ground_truth` and excluded. A **valid** genuine-blink trial requires
+  `self_report: "blinked"`, a valid genuine non-blink trial requires
+  `"did_not_blink"`, and a valid spoof trial requires `"n/a"`.
+- `attempt_outcome` and `outcome_reason` are **recomputed** from the observation
+  series, the frame counts and the shipping decision rule
+  (`max >= high` and `min <= low`, both inclusive, then the
+  `min_face_continuity` override). A recorded outcome that contradicts the
+  recomputation is rejected — an editable outcome field would otherwise let a
+  manifest assert any FAR or FRR its author wanted.
+- A retry may reference only an **excluded** original, must repeat the same
+  `intended_type` and the same `condition` cell, must occur after it, and there
+  may be at most one. Chains, cycles and cross-cell retries are rejected.
+- The decision comparison is **exact**. No tolerance widens either threshold: a
+  peak of `0.3999999995` does not reach a `0.40` high threshold, because the
+  shipping code says it does not. Validation calls
+  `faceauth.liveness.challenge_response.decide_blink` itself, so the two cannot
+  diverge.
+- `frames_captured` may not exceed `max_frames_per_challenge`; the capture loop
+  stops at the cap, so a larger count could not have been produced.
+- `blink_scores` may be no longer than `frames_with_face` — at most one score
+  per frame in which a face was seen.
+- `turn_ratios` must be null or absent when `enabled_challenges` is `["BLINK"]`:
+  no head-turn challenge was issued, so no turn-ratio series can exist.
+- `label_source` is `"schedule+self_report"` for a genuine trial and
+  `"schedule_only"` for a spoof. A spoof has no participant to self-report, so
+  claiming corroborating self-report evidence on one is rejected.
+- `randomisation_seed` must lie in `0 .. 4294967295`, so the run replays from
+  the manifest alone.
+- `liveness_implementation`, `schema_version` and `tool_version` must match what
+  the reading tool expects; a corpus may not mix them (nor Python minor
+  versions), because the same field names may not mean the same thing across
+  them.
+- No field anywhere contains a name, contact detail, serial number, or image —
+  enforced by the whitelist, not by a list of forbidden names.
 
 ## Prohibited fields
 

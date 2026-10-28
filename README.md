@@ -1,24 +1,21 @@
-# FaceAuth
+
+# FaceAuth: offline face authentication on a CPU
 
 [![CI](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/AddysEdge/ai-face-auth/actions/workflows/codeql.yml)
 
-A local, webcam-based face-authentication **demo/research prototype**. All
-face detection, embedding, and matching run locally on CPU; no image, frame,
-template, or embedding ever leaves the machine, and it makes **no outbound
-network connections at all**. That was not always true: the bundled MediaPipe
-binary uploaded usage telemetry to `play.googleapis.com` with no supported
-opt-out, which Phase 2.5 resolved by replacing that runtime - see
-[`docs/PRIVACY_NETWORK_AUDIT.md`](docs/PRIVACY_NETWORK_AUDIT.md) for the
-original measurement and
-[`docs/PHASE2_5_B17_RESEARCH.md`](docs/PHASE2_5_B17_RESEARCH.md) for the
-replacement and its evidence.
+A local, webcam-based face-authentication prototype in Python. Face detection, embedding and matching all run **offline on the CPU**: no image, frame, template or embedding ever leaves the machine, and the app makes no outbound network connections.
 
-It is a longer-term exploration into whether a legitimate, Microsoft-supported
-Windows Credential Provider could one day offer face authentication as an
-alternative sign-in method. **It does not touch Windows
-sign-in in any way, and after the Phase 2 review it is clear that for a local
-Windows account it never can - see below.**
+### What it does
+
+- **3-model pipeline:** quality-gates each webcam frame, checks for a real blink (liveness), extracts a 128-dimensional SFace embedding, and matches it against 5 enrollment samples.
+- **Protects what it stores:** templates are encrypted with Windows DPAPI, models are checksum-pinned, errors fail closed, and raw enrollment images are not stored by default.
+- **Tested against spoofing:** 20 test files and a 10-second phone-spoof trial. A head-turn challenge that a still photo could fool was removed and frame-continuity checks were strengthened.
+- **Audited for privacy:** a network audit found the bundled MediaPipe binary sending usage telemetry, so that runtime was replaced (see `docs/PRIVACY_NETWORK_AUDIT.md`).
+
+### Scope, stated plainly
+
+This is a research prototype. It does **not** touch Windows sign-in, and it is not Windows Hello-equivalent security. In particular, it does not defend against video replay. The Windows Credential Provider feasibility review and the full list of limitations are below.
 
 ## Current status
 

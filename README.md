@@ -10,7 +10,7 @@ A local, webcam-based face-authentication prototype in Python. Face detection, e
 
 - **3-model pipeline:** quality-gates each webcam frame, checks for a real blink (liveness), extracts a 128-dimensional SFace embedding, and matches it against 5 enrollment samples.
 - **Protects what it stores:** templates are encrypted with Windows DPAPI, models are checksum-pinned, errors fail closed, and raw enrollment images are not stored by default.
-- **Tested against spoofing:** 20 test files and a 10-second phone-spoof trial. A head-turn challenge that a still photo could fool was removed and frame-continuity checks were strengthened.
+- **Tested:** 650 automated tests (as of October 2026) run in CI on every push to `main` and every pull request, plus a 10-second phone-spoof trial. A head-turn challenge that a still photo could fool was removed and frame-continuity checks were strengthened.
 - **Audited for privacy:** a network audit found the bundled MediaPipe binary sending usage telemetry, so that runtime was replaced (see `docs/PRIVACY_NETWORK_AUDIT.md`).
 
 ### Scope, stated plainly
@@ -21,7 +21,7 @@ This is a research prototype. It does **not** touch Windows sign-in, and it is n
 
 | | |
 |---|---|
-| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling. 234 tests. |
+| **Phase 1 - standalone Python application** | **Complete.** Enrollment, authentication, liveness, encrypted templates, rate limiting, CLI, demo window, evaluation tooling, all covered by the CI test suite. |
 | **Phase 2 - security and feasibility review + inert native scaffold** | **Complete.** Architecture review, four ADRs, and a non-activating C++ IPC contract scaffold under [`native/`](native/). |
 | **Phase 3 - an actual Windows Credential Provider** | **Not started, and gated.** **Every** Part B entry criterion must pass first - see [entry criteria](docs/PHASE2_ACCEPTANCE_CRITERIA.md). B1, B2, B15, and B17 are the most architecture-critical, but they are not the whole gate. |
 

@@ -10,7 +10,7 @@ A local, webcam-based face-authentication prototype in Python. Face detection, e
 
 - **3-model pipeline:** quality-gates each webcam frame, checks for a real blink (liveness), extracts a 128-dimensional SFace embedding, and matches it against 5 enrollment samples.
 - **Protects what it stores:** templates are encrypted with Windows DPAPI, models are checksum-pinned, errors fail closed, and raw enrollment images are not stored by default.
-- **Tested:** 650 automated tests (as of October 2026) run in CI on every push to `main` and every pull request, plus a 10-second phone-spoof trial. A head-turn challenge that a still photo could fool was removed and frame-continuity checks were strengthened.
+- **Tested:** 650 automated tests (as of October 2026) run in CI on every push to `main` and every pull request, plus a 10-second phone-spoof trial. A head-turn challenge that a still photo could fool was disabled by default, and frame-continuity checks were strengthened.
 - **Audited for privacy:** a network audit found the bundled MediaPipe binary sending usage telemetry, so that runtime was replaced (see `docs/PRIVACY_NETWORK_AUDIT.md`).
 
 ### Scope, stated plainly

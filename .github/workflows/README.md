@@ -73,6 +73,10 @@ ignored advisories today, and adding one silently is not acceptable.
 
 ## Pinned action versions
 
+CodeQL's init and analyze steps must use the same release and commit SHA.
+The `codeql` Dependabot group updates them together; splitting those changes
+causes the analysis jobs to reject the mismatched configuration.
+
 Every action is pinned to a full commit SHA with a trailing version comment:
 
 ```yaml
